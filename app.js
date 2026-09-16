@@ -1,108 +1,1039 @@
-const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-let filters=[...window.DEFAULT_FILTERS];
-try{const saved=JSON.parse(localStorage.getItem("butterfly_custom_filters")||"[]"); filters.push(...saved)}catch{}
-let selected=0, image=null, intensity=100, ratio="3/4", playlist=[];
-const canvas=$("#canvas"), ctx=canvas.getContext("2d");
-const filterList=$("#filterList"), selectedName=$("#selectedName");
+"use strict";
 
-function renderList(){
-  const q=$("#search").value.toLowerCase().trim();
-  filterList.innerHTML="";
-  filters.forEach((f,i)=>{if(!f.name.toLowerCase().includes(q))return;
-    const b=document.createElement("button"); b.className="filterItem"+(i===selected?" active":"");
-    b.innerHTML=`<span>${escapeHtml(f.name)}</span><span class="num">${String(i+1).padStart(3,"0")}</span>`;
-    b.onclick=()=>{selected=i; selectedName.textContent=f.name; renderList(); draw();};
-    filterList.appendChild(b);
+/* =========================================================
+   BUTTERFLYEFFECT — MAIN APP
+   Works with either:
+   filters/filters.js
+   OR root filters.js
+   ========================================================= */
+
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
+
+/* ---------- 110 FILTER FALLBACK ---------- */
+
+const FILTER_NAMES = [
+  "X-Ray Scan","Banknote Engraving","Wire Photo","Giallo Gels",
+  "Two-Strip","Aerochrome","Slow Shutter","Full Stitch",
+  "Aura Gradient","Night Vision","Blue Negative","LED Matrix",
+  "Chemical Frost","Ink Bloom","Photogram","Heat Trace",
+  "Scan Lines","Film Soup","Cyanotype","Fogged Glass",
+  "Dead Pixels","Low Poly","256 Colors","Blue Flood",
+  "Herbarium","Density Map","Thermal Print","Paint By Number",
+  "Encyclopedia Plate","Ransom Collage","Wet Emulsion","Desktop 98",
+  "Cursor Swarm","Cutout Redaction","Scribble Riot","Paper Crumple",
+  "Solarized Print","Marker Makeup","Deadpan Toon","Chirashi Flyer",
+  "Street Poster","Cross Stitch","Blind Emboss","Overprint",
+  "Sticker Bomb","Bubble Wrapped","Liquid Chrome","Specimen Sheet",
+  "Misprint Echo","Camcorder HUD","VHS Chrome","Split Halftone",
+  "Indexed Dither","Stencil Fluoro","Sabattier Push","Voxel Relief",
+  "Amber Glamour","Screen Engraving","Thermal Liquid","Fog Silhouette",
+  "Pink Bloom","Rescreen","Teletext","Redscale Flash",
+  "Heat Negative","Chromatography","Vector Dissect","Dragged Shutter",
+  "Screen Clash","Chemigram","Expired Tungsten","Pastel Thermal",
+  "Paste-Up Collage","Overexposure Bloom","Slit Scan","Platen Drag",
+  "Blacklight","Forensic Photo","Lenticular","Pinscreen",
+  "Electron Scan","Daguerreotype","Autochrome","Jacquard Weave",
+  "4-Shade LCD","Dye Halo","Light Painted","Edge Trace",
+  "VCR OSD","Surveillance Dossier","Thermal Mask","Projector Burn",
+  "Riso Bloom","Radiograph Zine","Pixel Sort","Archive Rot",
+  "Three Inks","Scrap Stitched","Bleach Dye","Stitch Chart",
+  "Dot Interference","Cyber Sigil","Chrome Rorschach","Heat Contour",
+  "Pixel Lace","Pink Phosphor","Dropped Stitch","Hyper Slice",
+  "Bio HUD","Poison Copy"
+];
+
+/* If filters/filters.js loaded correctly, use it.
+   Otherwise create the 110 filters here. */
+
+if (!Array.isArray(window.DEFAULT_FILTERS)) {
+  window.DEFAULT_FILTERS = FILTER_NAMES.map((name, i) => ({
+    id: `f${i + 1}`,
+    name,
+    category: "Original 110"
+  }));
+}
+
+/* ---------- STATE ---------- */
+
+let filters = [...window.DEFAULT_FILTERS];
+
+let selected = 0;
+let image = null;
+let intensity = 100;
+let ratio = "3/4";
+let playlist = [];
+
+/* ---------- DOM ---------- */
+
+const canvas = $("#canvas");
+const ctx = canvas ? canvas.getContext("2d") : null;
+const filterList = $("#filterList");
+const selectedName = $("#selectedName");
+
+/* ---------- SAFETY ---------- */
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (m) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;"
+  }[m]));
+}
+
+/* ---------- CUSTOM FILTERS ---------- */
+
+function loadCustomFilters() {
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem("butterfly_custom_filters") || "[]"
+    );
+
+    if (Array.isArray(saved)) {
+      filters.push(...saved);
+    }
+  } catch (e) {
+    console.warn("Could not load custom filters.");
+  }
+}
+
+loadCustomFilters();
+
+/* ---------- FILTER LIST ---------- */
+
+function renderList() {
+  if (!filterList) return;
+
+  const search = ($("#search")?.value || "").toLowerCase().trim();
+
+  filterList.innerHTML = "";
+
+  filters.forEach((filter, index) => {
+
+    if (!filter.name.toLowerCase().includes(search)) return;
+
+    const button = document.createElement("button");
+
+    button.className =
+      "filterItem" + (index === selected ? " active" : "");
+
+    button.innerHTML = `
+      <span>${escapeHtml(filter.name)}</span>
+      <span class="num">${String(index + 1).padStart(3, "0")}</span>
+    `;
+
+    button.addEventListener("click", () => {
+      selected = index;
+
+      if (selectedName) {
+        selectedName.textContent = filter.name;
+      }
+
+      renderList();
+      draw();
+    });
+
+    filterList.appendChild(button);
   });
-  $("#count").textContent=filters.length; $("#skinCount").textContent=filters.length;
-}
-function escapeHtml(s){return s.replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
-function loadFile(file){
-  if(!file||!file.type.startsWith("image/"))return;
-  const r=new FileReader(); r.onload=e=>{image=new Image();image.onload=()=>{$("#dropzone").classList.add("hasImage");$("#emptyState").style.display="none";draw()};image.src=e.target.result};r.readAsDataURL(file);
-}
-function draw(){
- if(!image)return;
- const [rw,rh]=ratio.split("/").map(Number), max=1600;
- let w=image.naturalWidth,h=image.naturalHeight, ar=rw/rh;
- if(w/h>ar) h=Math.round(w/ar); else w=Math.round(h*ar);
- const scale=Math.min(max/w,max/h,1); canvas.width=Math.round(w*scale);canvas.height=Math.round(h*scale);
- ctx.clearRect(0,0,canvas.width,canvas.height);
- ctx.save();
- const f=filters[selected];
- ctx.filter=cssFor(f.name, intensity, f.recipe||"");
- ctx.drawImage(image,0,0,canvas.width,canvas.height); ctx.restore();
- overlay(f.name);
-}
-function cssFor(name, I, recipe){
- if(recipe)return recipe.replace(/\b(\d+(?:\.\d+)?)\b/g,(m,n)=>n); 
- const x=I/100, n=name.toLowerCase();
- let s="none";
- if(n.includes("negative")||n.includes("x-ray")||n.includes("radiograph")) s="invert(1) contrast(1.25) grayscale(.35)";
- else if(n.includes("night")||n.includes("blacklight")||n.includes("phosphor")) s="brightness(.75) contrast(1.35) hue-rotate(85deg) saturate(1.7)";
- else if(n.includes("thermal")||n.includes("heat")||n.includes("chromatography")) s="contrast(1.4) saturate(2.1) hue-rotate(-28deg)";
- else if(n.includes("cyanotype")||n.includes("blue")) s="grayscale(.35) sepia(.15) hue-rotate(165deg) saturate(1.8) contrast(1.2)";
- else if(n.includes("redscale")||n.includes("amber")||n.includes("giallo")) s="sepia(.55) saturate(1.8) hue-rotate(-12deg) contrast(1.1)";
- else if(n.includes("solarized")) s="invert(.8) contrast(1.3) saturate(1.4)";
- else if(n.includes("vhs")||n.includes("camcorder")||n.includes("vcr")) s="contrast(1.15) saturate(1.35) hue-rotate(-8deg)";
- else if(n.includes("pastel")||n.includes("pink")||n.includes("aura")||n.includes("bloom")) s="brightness(1.12) saturate(1.35) contrast(.9)";
- else if(n.includes("daguerreotype")||n.includes("expired")||n.includes("archive")) s="grayscale(.7) sepia(.5) contrast(1.15)";
- else if(n.includes("dither")||n.includes("256")||n.includes("lcd")||n.includes("teletext")) s="saturate(.6) contrast(1.45)";
- else if(n.includes("chrome")||n.includes("liquid")) s="contrast(1.5) saturate(1.4) brightness(1.05)";
- else if(n.includes("toon")||n.includes("low poly")||n.includes("stencil")) s="contrast(1.55) saturate(1.45)";
- else s=`contrast(${1+.35*x}) saturate(${1+.55*x}) brightness(${1+.08*x})`;
- return s;
-}
-function overlay(name){
- const n=name.toLowerCase(), w=canvas.width,h=canvas.height,x=intensity/100;
- if(n.includes("scan")||n.includes("matrix")||n.includes("hud")||n.includes("teletext")||n.includes("osd")){
-   ctx.save();ctx.globalAlpha=.18*x;ctx.strokeStyle="#b9ff62";ctx.lineWidth=1;
-   for(let y=0;y<h;y+=4)ctx.beginPath(),ctx.moveTo(0,y),ctx.lineTo(w,y),ctx.stroke();
-   ctx.restore();
- }
- if(n.includes("dither")||n.includes("halftone")||n.includes("engraving")||n.includes("stitch")||n.includes("weave")){
-   ctx.save();ctx.globalAlpha=.18*x;ctx.fillStyle="#fff";let gap=Math.max(3,8-x*5);
-   for(let y=0;y<h;y+=gap)for(let xx=0;xx<w;xx+=gap){if(((xx+y)/gap)%2<1)ctx.fillRect(xx,y,1,1)}ctx.restore();
- }
- if(n.includes("glitch")||n.includes("misprint")||n.includes("split")||n.includes("screen clash")||n.includes("pixel sort")||n.includes("hyper slice")){
-   ctx.save();for(let i=0;i<8*x;i++){let y=Math.random()*h,hh=2+Math.random()*12;ctx.globalAlpha=.25;ctx.drawImage(canvas,Math.random()*18-9,y,w,hh,Math.random()*14-7,y,w,hh)}ctx.restore();
- }
- if(n.includes("redaction")||n.includes("forensic")||n.includes("dossier")){ctx.save();ctx.globalAlpha=.75*x;ctx.fillStyle="#08090d";for(let i=0;i<7;i++)ctx.fillRect(w*.1+Math.random()*w*.7,Math.random()*h,w*.12,8+Math.random()*18);ctx.restore()}
- if(n.includes("scribble")||n.includes("riot")||n.includes("cyber sigil")){ctx.save();ctx.globalAlpha=.5*x;ctx.strokeStyle="#b9ff62";for(let i=0;i<9;i++){ctx.beginPath();ctx.moveTo(Math.random()*w,Math.random()*h);ctx.lineTo(Math.random()*w,Math.random()*h);ctx.stroke()}ctx.restore()}
-}
-function download(){
- if(!image)return alert("Choose an image first.");
- const a=document.createElement("a");a.download=`butterflyeffect-${filters[selected].name.toLowerCase().replace(/[^a-z0-9]+/g,"-")}.png`;a.href=canvas.toDataURL("image/png");a.click();
-}
-$("#chooseBtn").onclick=()=>$("#fileInput").click(); $("#dropzone").onclick=e=>{if(e.target===canvas)return;$("#fileInput").click()};
-$("#fileInput").onchange=e=>loadFile(e.target.files[0]);
-$("#dropzone").ondragover=e=>{e.preventDefault();$("#dropzone").classList.add("drag")};
-$("#dropzone").ondragleave=()=>$("#dropzone").classList.remove("drag");
-$("#dropzone").ondrop=e=>{e.preventDefault();$("#dropzone").classList.remove("drag");loadFile(e.dataTransfer.files[0])};
-$("#search").oninput=renderList;
-$("#intensity").oninput=e=>{intensity=+e.target.value;$("#intensityValue").textContent=intensity+"%";draw()};
-$$(".ratio").forEach(b=>b.onclick=()=>{$$(".ratio").forEach(x=>x.classList.remove("active"));b.classList.add("active");ratio=b.dataset.ratio;draw()});
-$("#prevBtn").onclick=()=>{selected=(selected-1+filters.length)%filters.length;selectedName.textContent=filters[selected].name;renderList();draw()};
-$("#nextBtn").onclick=()=>{selected=(selected+1)%filters.length;selectedName.textContent=filters[selected].name;renderList();draw()};
-$("#downloadBtn").onclick=download;
-$("#fullscreenBtn").onclick=()=>$("#dropzone").requestFullscreen?.();
-$("#themeBtn").onclick=()=>document.body.classList.toggle("light");
 
-$$(".tab").forEach(b=>b.onclick=()=>{$$(".tab").forEach(x=>x.classList.remove("active"));b.classList.add("active");$$(".tabPage").forEach(x=>x.classList.remove("active"));$("#"+b.dataset.tab).classList.add("active")});
+  if ($("#count")) {
+    $("#count").textContent = filters.length;
+  }
 
-function addToPlaylist(i){if(!playlist.includes(i))playlist.push(i);renderPlaylist()}
-function renderPlaylist(){const el=$("#playlistItems");el.innerHTML=playlist.length?playlist.map(i=>`<div class="playlistRow"><span>${escapeHtml(filters[i].name)}</span><button onclick="playlist=playlist.filter(x=>x!==${i});renderPlaylist()">Remove</button></div>`).join(""):"<p>No skins added yet. Use the browser console or add-to-playlist from a future update.</p>"}
-$("#addFilterBtn").onclick=()=>$("#modal").classList.remove("hidden");
-$("#closeModal").onclick=()=>$("#modal").classList.add("hidden");
-$("#newIntensity").oninput=e=>$("#newIntensityValue").textContent=e.target.value+"%";
-$("#saveFilter").onclick=()=>{
- const name=$("#newName").value.trim(); if(!name)return alert("Give the filter a name.");
- const custom={id:"custom-"+Date.now(),name,category:$("#newCategory").value,recipe:$("#newRecipe").value.trim()||"contrast(1.2) saturate(1.3)"};
- const customs=filters.filter(f=>f.id.startsWith("custom-"));customs.push(custom);localStorage.setItem("butterfly_custom_filters",JSON.stringify(customs));
- filters=[...window.DEFAULT_FILTERS,...customs];selected=filters.length-1;selectedName.textContent=name;renderList();$("#modal").classList.add("hidden");$("#newName").value="";$("#newRecipe").value="";draw();
-};
-$("#exportPack").onclick=()=>{const c=filters.filter(f=>f.id.startsWith("custom-"));const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(c,null,2)],{type:"application/json"}));a.download="butterflyeffect-custom-filters.json";a.click()};
-$("#importPack").onclick=()=>$("#packInput").click();
-$("#packInput").onchange=e=>{const file=e.target.files[0];if(!file)return;const r=new FileReader();r.onload=()=>{try{const incoming=JSON.parse(r.result).filter(x=>x.name);const old=filters.filter(f=>f.id.startsWith("custom-"));const merged=[...old,...incoming.map(x=>({...x,id:"custom-"+Date.now()+"-"+Math.random()}))];localStorage.setItem("butterfly_custom_filters",JSON.stringify(merged));filters=[...window.DEFAULT_FILTERS,...merged];renderList()}catch{alert("Invalid filter pack.")}};r.readAsText(file)};
+  if ($("#skinCount")) {
+    $("#skinCount").textContent = filters.length;
+  }
+}
 
-renderList();selectedName.textContent=filters[0].name;
+/* ---------- IMAGE LOADING ---------- */
+
+function loadFile(file) {
+
+  if (!file || !file.type.startsWith("image/")) {
+    alert("Please choose an image.");
+    return;
+  }
+
+  const reader = new FileReader();
+
+  reader.onload = (event) => {
+
+    image = new Image();
+
+    image.onload = () => {
+
+      $("#dropzone")?.classList.add("hasImage");
+
+      const empty = $("#emptyState");
+
+      if (empty) {
+        empty.style.display = "none";
+      }
+
+      draw();
+    };
+
+    image.src = event.target.result;
+  };
+
+  reader.readAsDataURL(file);
+}
+
+/* ---------- CSS FILTER ENGINE ---------- */
+
+function cssFor(name, amount, recipe) {
+
+  if (recipe) {
+    return recipe;
+  }
+
+  const n = name.toLowerCase();
+  const x = amount / 100;
+
+  if (
+    n.includes("x-ray") ||
+    n.includes("negative") ||
+    n.includes("radiograph")
+  ) {
+    return "invert(1) contrast(1.4) grayscale(.25)";
+  }
+
+  if (
+    n.includes("night") ||
+    n.includes("blacklight") ||
+    n.includes("phosphor")
+  ) {
+    return "brightness(.75) contrast(1.5) hue-rotate(85deg) saturate(1.8)";
+  }
+
+  if (
+    n.includes("thermal") ||
+    n.includes("heat") ||
+    n.includes("chromatography")
+  ) {
+    return "contrast(1.45) saturate(2.2) hue-rotate(-30deg)";
+  }
+
+  if (
+    n.includes("cyanotype") ||
+    n.includes("blue")
+  ) {
+    return "grayscale(.3) hue-rotate(165deg) saturate(1.8) contrast(1.25)";
+  }
+
+  if (
+    n.includes("redscale") ||
+    n.includes("amber") ||
+    n.includes("giallo")
+  ) {
+    return "sepia(.6) saturate(1.8) hue-rotate(-12deg) contrast(1.15)";
+  }
+
+  if (n.includes("solarized")) {
+    return "invert(.8) contrast(1.4) saturate(1.4)";
+  }
+
+  if (
+    n.includes("vhs") ||
+    n.includes("camcorder") ||
+    n.includes("vcr")
+  ) {
+    return "contrast(1.2) saturate(1.45) hue-rotate(-10deg)";
+  }
+
+  if (
+    n.includes("pastel") ||
+    n.includes("pink") ||
+    n.includes("aura") ||
+    n.includes("bloom")
+  ) {
+    return "brightness(1.12) saturate(1.45) contrast(.9)";
+  }
+
+  if (
+    n.includes("daguerreotype") ||
+    n.includes("expired") ||
+    n.includes("archive")
+  ) {
+    return "grayscale(.7) sepia(.55) contrast(1.15)";
+  }
+
+  if (
+    n.includes("dither") ||
+    n.includes("256") ||
+    n.includes("lcd") ||
+    n.includes("teletext")
+  ) {
+    return "saturate(.65) contrast(1.5)";
+  }
+
+  if (
+    n.includes("chrome") ||
+    n.includes("liquid")
+  ) {
+    return "contrast(1.55) saturate(1.5) brightness(1.05)";
+  }
+
+  if (
+    n.includes("toon") ||
+    n.includes("low poly") ||
+    n.includes("stencil")
+  ) {
+    return "contrast(1.65) saturate(1.5)";
+  }
+
+  return `
+    contrast(${1 + 0.35 * x})
+    saturate(${1 + 0.55 * x})
+    brightness(${1 + 0.08 * x})
+  `;
+}
+
+/* ---------- CANVAS EFFECTS ---------- */
+
+function drawOverlay(name) {
+
+  if (!ctx || !canvas) return;
+
+  const n = name.toLowerCase();
+  const w = canvas.width;
+  const h = canvas.height;
+  const x = intensity / 100;
+
+  /* scan lines */
+
+  if (
+    n.includes("scan") ||
+    n.includes("matrix") ||
+    n.includes("hud") ||
+    n.includes("teletext") ||
+    n.includes("osd")
+  ) {
+
+    ctx.save();
+
+    ctx.globalAlpha = 0.16 * x;
+    ctx.strokeStyle = "#b9ff62";
+    ctx.lineWidth = 1;
+
+    for (let y = 0; y < h; y += 4) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  /* dots / print texture */
+
+  if (
+    n.includes("dither") ||
+    n.includes("halftone") ||
+    n.includes("engraving") ||
+    n.includes("stitch") ||
+    n.includes("weave")
+  ) {
+
+    ctx.save();
+
+    ctx.globalAlpha = 0.2 * x;
+    ctx.fillStyle = "#ffffff";
+
+    const gap = Math.max(4, 9 - x * 5);
+
+    for (let y = 0; y < h; y += gap) {
+
+      for (let xx = 0; xx < w; xx += gap) {
+
+        if (Math.random() > 0.5) {
+          ctx.fillRect(xx, y, 1.5, 1.5);
+        }
+      }
+    }
+
+    ctx.restore();
+  }
+
+  /* glitch */
+
+  if (
+    n.includes("misprint") ||
+    n.includes("split") ||
+    n.includes("screen clash") ||
+    n.includes("pixel sort") ||
+    n.includes("hyper slice")
+  ) {
+
+    ctx.save();
+
+    for (let i = 0; i < 10 * x; i++) {
+
+      const y = Math.random() * h;
+      const height = 2 + Math.random() * 15;
+      const shift = Math.random() * 25 - 12;
+
+      ctx.globalAlpha = 0.25;
+
+      ctx.drawImage(
+        canvas,
+        0,
+        y,
+        w,
+        height,
+        shift,
+        y,
+        w,
+        height
+      );
+    }
+
+    ctx.restore();
+  }
+
+  /* redaction */
+
+  if (
+    n.includes("redaction") ||
+    n.includes("forensic") ||
+    n.includes("dossier")
+  ) {
+
+    ctx.save();
+
+    ctx.globalAlpha = 0.7 * x;
+    ctx.fillStyle = "#08090d";
+
+    for (let i = 0; i < 7; i++) {
+
+      ctx.fillRect(
+        w * 0.1 + Math.random() * w * 0.7,
+        Math.random() * h,
+        w * 0.12,
+        8 + Math.random() * 18
+      );
+    }
+
+    ctx.restore();
+  }
+
+  /* cyber scribbles */
+
+  if (
+    n.includes("scribble") ||
+    n.includes("riot") ||
+    n.includes("cyber sigil")
+  ) {
+
+    ctx.save();
+
+    ctx.globalAlpha = 0.45 * x;
+    ctx.strokeStyle = "#b9ff62";
+    ctx.lineWidth = 2;
+
+    for (let i = 0; i < 10; i++) {
+
+      ctx.beginPath();
+
+      ctx.moveTo(
+        Math.random() * w,
+        Math.random() * h
+      );
+
+      ctx.lineTo(
+        Math.random() * w,
+        Math.random() * h
+      );
+
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  /* grain */
+
+  if (
+    n.includes("film") ||
+    n.includes("emulsion") ||
+    n.includes("soup") ||
+    n.includes("rot")
+  ) {
+
+    ctx.save();
+
+    const amount = Math.floor(800 * x);
+
+    for (let i = 0; i < amount; i++) {
+
+      const px = Math.random() * w;
+      const py = Math.random() * h;
+
+      ctx.globalAlpha = Math.random() * 0.15;
+      ctx.fillStyle =
+        Math.random() > 0.5 ? "#ffffff" : "#000000";
+
+      ctx.fillRect(px, py, 1, 1);
+    }
+
+    ctx.restore();
+  }
+}
+
+/* ---------- DRAW ---------- */
+
+function draw() {
+
+  if (!image || !canvas || !ctx) return;
+
+  const [rw, rh] = ratio.split("/").map(Number);
+
+  const max = 1600;
+
+  let width = image.naturalWidth;
+  let height = image.naturalHeight;
+
+  const targetRatio = rw / rh;
+
+  if (width / height > targetRatio) {
+    height = Math.round(width / targetRatio);
+  } else {
+    width = Math.round(height * targetRatio);
+  }
+
+  const scale = Math.min(
+    max / width,
+    max / height,
+    1
+  );
+
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+
+  ctx.clearRect(
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  const filter = filters[selected];
+
+  ctx.save();
+
+  ctx.filter = cssFor(
+    filter.name,
+    intensity,
+    filter.recipe || ""
+  );
+
+  ctx.drawImage(
+    image,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  ctx.restore();
+
+  drawOverlay(filter.name);
+}
+
+/* ---------- DOWNLOAD ---------- */
+
+function downloadImage() {
+
+  if (!image) {
+    alert("Choose an image first.");
+    return;
+  }
+
+  const filename =
+    filters[selected].name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-");
+
+  const link = document.createElement("a");
+
+  link.download =
+    `butterflyeffect-${filename}.png`;
+
+  link.href =
+    canvas.toDataURL("image/png");
+
+  link.click();
+}
+
+/* ---------- IMAGE INPUT ---------- */
+
+$("#chooseBtn")?.addEventListener(
+  "click",
+  () => $("#fileInput")?.click()
+);
+
+$("#fileInput")?.addEventListener(
+  "change",
+  (e) => loadFile(e.target.files[0])
+);
+
+$("#dropzone")?.addEventListener(
+  "click",
+  (e) => {
+
+    if (e.target === canvas) return;
+
+    $("#fileInput")?.click();
+  }
+);
+
+$("#dropzone")?.addEventListener(
+  "dragover",
+  (e) => {
+    e.preventDefault();
+    $("#dropzone")?.classList.add("drag");
+  }
+);
+
+$("#dropzone")?.addEventListener(
+  "dragleave",
+  () => {
+    $("#dropzone")?.classList.remove("drag");
+  }
+);
+
+$("#dropzone")?.addEventListener(
+  "drop",
+  (e) => {
+
+    e.preventDefault();
+
+    $("#dropzone")?.classList.remove("drag");
+
+    loadFile(e.dataTransfer.files[0]);
+  }
+);
+
+/* ---------- SEARCH ---------- */
+
+$("#search")?.addEventListener(
+  "input",
+  renderList
+);
+
+/* ---------- INTENSITY ---------- */
+
+$("#intensity")?.addEventListener(
+  "input",
+  (e) => {
+
+    intensity = Number(e.target.value);
+
+    if ($("#intensityValue")) {
+      $("#intensityValue").textContent =
+        `${intensity}%`;
+    }
+
+    draw();
+  }
+);
+
+/* ---------- ASPECT ---------- */
+
+$$(".ratio").forEach((button) => {
+
+  button.addEventListener(
+    "click",
+    () => {
+
+      $$(".ratio").forEach(
+        (b) => b.classList.remove("active")
+      );
+
+      button.classList.add("active");
+
+      ratio = button.dataset.ratio;
+
+      draw();
+    }
+  );
+});
+
+/* ---------- PREVIOUS / NEXT ---------- */
+
+$("#prevBtn")?.addEventListener(
+  "click",
+  () => {
+
+    selected =
+      (selected - 1 + filters.length) %
+      filters.length;
+
+    if (selectedName) {
+      selectedName.textContent =
+        filters[selected].name;
+    }
+
+    renderList();
+    draw();
+  }
+);
+
+$("#nextBtn")?.addEventListener(
+  "click",
+  () => {
+
+    selected =
+      (selected + 1) %
+      filters.length;
+
+    if (selectedName) {
+      selectedName.textContent =
+        filters[selected].name;
+    }
+
+    renderList();
+    draw();
+  }
+);
+
+/* ---------- EXPORT ---------- */
+
+$("#downloadBtn")?.addEventListener(
+  "click",
+  downloadImage
+);
+
+/* ---------- FULLSCREEN ---------- */
+
+$("#fullscreenBtn")?.addEventListener(
+  "click",
+  () => {
+
+    if ($("#dropzone")?.requestFullscreen) {
+      $("#dropzone").requestFullscreen();
+    }
+  }
+);
+
+/* ---------- THEME ---------- */
+
+$("#themeBtn")?.addEventListener(
+  "click",
+  () => document.body.classList.toggle("light")
+);
+
+/* ---------- TABS ---------- */
+
+$$(".tab").forEach((button) => {
+
+  button.addEventListener(
+    "click",
+    () => {
+
+      $$(".tab").forEach(
+        (b) => b.classList.remove("active")
+      );
+
+      button.classList.add("active");
+
+      $$(".tabPage").forEach(
+        (page) => page.classList.remove("active")
+      );
+
+      const target =
+        $("#" + button.dataset.tab);
+
+      target?.classList.add("active");
+    }
+  );
+});
+
+/* ---------- PLAYLIST ---------- */
+
+function renderPlaylist() {
+
+  const container = $("#playlistItems");
+
+  if (!container) return;
+
+  if (!playlist.length) {
+
+    container.innerHTML =
+      "<p>No skins added yet.</p>";
+
+    return;
+  }
+
+  container.innerHTML =
+    playlist.map((index) => `
+      <div class="playlistRow">
+        <span>
+          ${escapeHtml(filters[index].name)}
+        </span>
+
+        <button
+          data-remove="${index}"
+          type="button"
+        >
+          Remove
+        </button>
+      </div>
+    `).join("");
+
+  container
+    .querySelectorAll("[data-remove]")
+    .forEach((button) => {
+
+      button.addEventListener(
+        "click",
+        () => {
+
+          const index =
+            Number(button.dataset.remove);
+
+          playlist =
+            playlist.filter(
+              (x) => x !== index
+            );
+
+          renderPlaylist();
+        }
+      );
+    });
+}
+
+/* ---------- ADD FILTER ---------- */
+
+$("#addFilterBtn")?.addEventListener(
+  "click",
+  () => {
+    $("#modal")?.classList.remove("hidden");
+  }
+);
+
+$("#closeModal")?.addEventListener(
+  "click",
+  () => {
+    $("#modal")?.classList.add("hidden");
+  }
+);
+
+/* ---------- CUSTOM FILTER ---------- */
+
+$("#newIntensity")?.addEventListener(
+  "input",
+  (e) => {
+
+    if ($("#newIntensityValue")) {
+      $("#newIntensityValue").textContent =
+        `${e.target.value}%`;
+    }
+  }
+);
+
+$("#saveFilter")?.addEventListener(
+  "click",
+  () => {
+
+    const name =
+      $("#newName")?.value.trim();
+
+    if (!name) {
+      alert("Give the filter a name.");
+      return;
+    }
+
+    const recipe =
+      $("#newRecipe")?.value.trim() ||
+      "contrast(1.2) saturate(1.3)";
+
+    const custom = {
+      id: `custom-${Date.now()}`,
+      name,
+      category:
+        $("#newCategory")?.value ||
+        "Experimental",
+      recipe
+    };
+
+    let customs = [];
+
+    try {
+      customs = JSON.parse(
+        localStorage.getItem(
+          "butterfly_custom_filters"
+        ) || "[]"
+      );
+
+      if (!Array.isArray(customs)) {
+        customs = [];
+      }
+    } catch {
+      customs = [];
+    }
+
+    customs.push(custom);
+
+    localStorage.setItem(
+      "butterfly_custom_filters",
+      JSON.stringify(customs)
+    );
+
+    filters = [
+      ...window.DEFAULT_FILTERS,
+      ...customs
+    ];
+
+    selected =
+      filters.length - 1;
+
+    if (selectedName) {
+      selectedName.textContent =
+        name;
+    }
+
+    renderList();
+
+    $("#modal")?.classList.add("hidden");
+
+    if ($("#newName")) {
+      $("#newName").value = "";
+    }
+
+    if ($("#newRecipe")) {
+      $("#newRecipe").value = "";
+    }
+
+    draw();
+  }
+);
+
+/* ---------- EXPORT CUSTOM FILTER PACK ---------- */
+
+$("#exportPack")?.addEventListener(
+  "click",
+  () => {
+
+    const customs =
+      filters.filter(
+        (f) =>
+          String(f.id).startsWith("custom-")
+      );
+
+    const blob =
+      new Blob(
+        [JSON.stringify(customs, null, 2)],
+        { type: "application/json" }
+      );
+
+    const link =
+      document.createElement("a");
+
+    link.href =
+      URL.createObjectURL(blob);
+
+    link.download =
+      "butterflyeffect-custom-filters.json";
+
+    link.click();
+
+    URL.revokeObjectURL(link.href);
+  }
+);
+
+/* ---------- IMPORT CUSTOM FILTER PACK ---------- */
+
+$("#importPack")?.addEventListener(
+  "click",
+  () => $("#packInput")?.click()
+);
+
+$("#packInput")?.addEventListener(
+  "change",
+  (e) => {
+
+    const file =
+      e.target.files[0];
+
+    if (!file) return;
+
+    const reader =
+      new FileReader();
+
+    reader.onload = () => {
+
+      try {
+
+        const incoming =
+          JSON.parse(reader.result);
+
+        if (!Array.isArray(incoming)) {
+          throw new Error();
+        }
+
+        const old =
+          filters.filter(
+            (f) =>
+              String(f.id)
+                .startsWith("custom-")
+          );
+
+        const added =
+          incoming
+            .filter((f) => f.name)
+            .map((f) => ({
+              ...f,
+              id:
+                `custom-${Date.now()}-${Math.random()
+                  .toString(36)
+                  .slice(2)}`
+            }));
+
+        const merged =
+          [...old, ...added];
+
+        localStorage.setItem(
+          "butterfly_custom_filters",
+          JSON.stringify(merged)
+        );
+
+        filters = [
+          ...window.DEFAULT_FILTERS,
+          ...merged
+        ];
+
+        renderList();
+
+        alert(
+          `${added.length} filter(s) imported.`
+        );
+
+      } catch {
+        alert(
+          "Invalid filter pack."
+        );
+      }
+    };
+
+    reader.readAsText(file);
+
+    e.target.value = "";
+  }
+);
+
+/* ---------- INITIALIZE ---------- */
+
+renderList();
+
+if (selectedName && filters.length) {
+  selectedName.textContent =
+    filters[0].name;
+}
+
+console.log(
+  `Butterflyeffect loaded: ${filters.length} filters`
+);
