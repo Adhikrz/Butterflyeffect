@@ -1,97 +1,256 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#08090d">
-<title>Butterflyeffect — Photo Skin Player</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>BUTTERFLYEFFECT — Experimental Photo Lab</title>
+
+  <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
-<div class="grain"></div>
-<header>
-  <div class="brand"><span class="mark">✦</span><div><b>BUTTERFLYEFFECT</b><small>PHOTO SKIN PLAYER · <span id="count">110</span> SKINS LOADED READY</small></div></div>
-  <button id="themeBtn" class="iconBtn" title="Toggle theme">☼</button>
-</header>
 
-<main>
-  <nav class="tabs">
-    <button class="tab active" data-tab="skins">Skins</button>
-    <button class="tab" data-tab="playlist">Playlist</button>
-    <button class="tab" data-tab="readme">Readme</button>
-  </nav>
+  <!-- TOP BAR -->
+  <header class="topbar">
 
-  <section id="skins" class="tabPage active">
-    <div class="hero">
+    <div class="brand">
+      <div class="brand-symbol">✦</div>
+
       <div>
-        <span class="eyebrow">01 / SOURCE LAB</span>
-        <h1>Make ordinary images<br><em>strange.</em></h1>
-        <p>Drop a photo in. Pick a skin. Push the intensity. Your browser does the rest.</p>
+        <div class="brand-name">BUTTERFLYEFFECT</div>
+        <div class="brand-sub">EXPERIMENTAL PHOTO LAB</div>
       </div>
-      <div class="status"><span class="dot"></span> LOCAL / NO UPLOAD</div>
     </div>
 
-    <div class="workspace">
-      <aside class="panel library">
-        <div class="panelHead"><div><span class="label">SKINS</span><strong id="skinCount">110</strong></div><button id="addFilterBtn" class="addBtn">＋ Add Filter</button></div>
-        <input id="search" class="search" placeholder="Search skins…" autocomplete="off">
-        <div id="filterList" class="filterList"></div>
+    <div class="top-actions">
+      <button id="randomBtn">⤨ RANDOM</button>
+      <button id="beforeBtn">BEFORE</button>
+      <button id="downloadBtn" class="primary">DOWNLOAD</button>
+    </div>
+
+  </header>
+
+
+  <!-- MAIN -->
+  <main>
+
+    <section class="workspace">
+
+      <!-- FILTER LIBRARY -->
+      <aside class="library">
+
+        <div class="library-head">
+
+          <div class="library-title">
+            <span id="count">110</span>
+            SKINS
+            <span class="loaded">LOADED</span>
+          </div>
+
+          <input
+            id="search"
+            type="text"
+            placeholder="Search effects..."
+          >
+
+        </div>
+
+        <div id="filterList" class="filter-list"></div>
+
       </aside>
 
-      <section class="stage panel">
-        <div class="stageTop">
-          <span id="selectedName">X-Ray Scan</span>
-          <div class="stageTools">
-            <button id="prevBtn">←</button><button id="nextBtn">→</button>
-            <button id="fullscreenBtn">⛶</button>
-          </div>
-        </div>
-        <div id="dropzone" class="dropzone">
+
+      <!-- IMAGE WORKSPACE -->
+      <section class="stage-wrap">
+
+        <div id="dropzone" class="stage">
+
           <canvas id="canvas"></canvas>
-          <div id="emptyState">
-            <div class="uploadIcon">＋</div>
-            <b>Drop an image here</b>
-            <span>or tap to choose a photo</span>
-            <button id="chooseBtn">Choose image</button>
+
+          <!-- EMPTY SCREEN -->
+          <div id="empty" class="empty">
+
+            <div class="orb">✦</div>
+
+            <h1>DROP A PHOTO</h1>
+
+            <p>
+              or choose an image to begin the experiment
+            </p>
+
+            <label class="upload primary">
+              CHOOSE IMAGE
+              <input
+                id="fileInput"
+                type="file"
+                accept="image/*"
+              >
+            </label>
+
           </div>
+
+          <div class="stage-label">
+            <span id="skinNo">01</span>
+            /
+            <span id="skinName">X-RAY SCAN</span>
+          </div>
+
         </div>
-        <input id="fileInput" type="file" accept="image/*" hidden>
+
+
+        <!-- CONTROLS -->
         <div class="controls">
-          <div class="control"><span>INTENSITY</span><output id="intensityValue">100%</output><input id="intensity" type="range" min="0" max="100" value="100"></div>
-          <div class="control"><span>ASPECT</span><div class="seg"><button data-ratio="3/4" class="ratio active">3:4</button><button data-ratio="1/1" class="ratio">1:1</button><button data-ratio="16/9" class="ratio">16:9</button></div></div>
-          <div class="control"><span>OUTPUT</span><button id="downloadBtn" class="primary">Export image ↗</button></div>
+
+          <div class="selected">
+
+            <small>SELECTED SKIN</small>
+
+            <strong id="selectedName">
+              X-Ray Scan
+            </strong>
+
+            <span id="selectedDesc">
+              Radiographic luminance reconstruction
+            </span>
+
+          </div>
+
+
+          <div class="sliderbox">
+
+            <label>
+              INTENSITY
+              <output id="intensityOut">100%</output>
+            </label>
+
+            <input
+              id="intensity"
+              type="range"
+              min="0"
+              max="100"
+              value="100"
+            >
+
+          </div>
+
+
+          <div class="ratio">
+
+            <label>RATIO</label>
+
+            <select id="ratio">
+
+              <option value="3:4">3:4</option>
+              <option value="1:1">1:1</option>
+              <option value="4:3">4:3</option>
+              <option value="16:9">16:9</option>
+              <option value="9:16">9:16</option>
+
+            </select>
+
+          </div>
+
         </div>
+
       </section>
+
+    </section>
+
+
+    <!-- BOTTOM BAR -->
+    <section class="bottom">
+
+      <div class="uploadline">
+
+        <label class="upload">
+          ＋ ADD PHOTO
+          <input
+            id="fileInput2"
+            type="file"
+            accept="image/*"
+          >
+        </label>
+
+        <button id="resetBtn">
+          RESET
+        </button>
+
+        <button id="creatorBtn">
+          ＋ FILTER CREATOR
+        </button>
+
+      </div>
+
+      <div id="status">
+        READY · ORIGINAL IMAGE
+      </div>
+
+    </section>
+
+  </main>
+
+
+  <!-- FILTER CREATOR -->
+  <div id="creator" class="modal hidden">
+
+    <div class="modal-card">
+
+      <button
+        class="close"
+        id="closeCreator"
+      >
+        ×
+      </button>
+
+      <div class="eyebrow">
+        BUILD YOUR OWN
+      </div>
+
+      <h2>
+        FILTER CREATOR
+      </h2>
+
+      <input
+        id="customName"
+        placeholder="Filter name"
+      >
+
+      <select id="customBase"></select>
+
+      <label>
+
+        INTENSITY
+
+        <output id="customOut">
+          80%
+        </output>
+
+      </label>
+
+      <input
+        id="customIntensity"
+        type="range"
+        min="0"
+        max="100"
+        value="80"
+      >
+
+      <button
+        id="saveCustom"
+        class="primary wide"
+      >
+        SAVE TO LIBRARY
+      </button>
+
     </div>
-  </section>
 
-  <section id="playlist" class="tabPage">
-    <div class="simplePanel"><span class="eyebrow">02 / PLAYLIST</span><h2>Your skin sequence</h2><p>Add skins to a sequence and cycle through them like a visual sampler.</p><div id="playlistItems" class="playlistItems"></div></div>
-  </section>
-
-  <section id="readme" class="tabPage">
-    <div class="simplePanel"><span class="eyebrow">03 / README</span><h2>Butterflyeffect</h2>
-    <p>A browser-only experimental photo skin player inspired by the visual workflow of modern image-effect labs. The effects are implemented from scratch with CSS/canvas techniques.</p>
-    <div class="featureGrid"><div><b>110 skins</b><span>All original skin names from the reference workflow.</span></div><div><b>Filter Creator</b><span>Make and save your own filters locally.</span></div><div><b>Private</b><span>Images stay in your browser.</span></div><div><b>GitHub Pages</b><span>Static files. No server required.</span></div></div></div>
-  </section>
-</main>
-
-<div id="modal" class="modal hidden">
-  <div class="modalCard">
-    <button id="closeModal" class="close">×</button>
-    <span class="eyebrow">FILTER CREATOR</span><h2>Create a new skin</h2>
-    <label>Name<input id="newName" placeholder="e.g. Butterfly Dream"></label>
-    <label>Category<select id="newCategory"><option>Experimental</option><option>Portrait</option><option>Retro</option><option>Glitch</option><option>Print</option></select></label>
-    <label>CSS recipe<input id="newRecipe" placeholder="contrast(1.3) saturate(1.5) hue-rotate(25deg)"></label>
-    <label>Intensity <output id="newIntensityValue">100%</output><input id="newIntensity" type="range" min="0" max="100" value="100"></label>
-    <div class="modalActions"><button id="saveFilter" class="primary">Save filter</button><button id="exportPack">Export custom pack</button><button id="importPack">Import pack</button></div>
-    <input id="packInput" type="file" accept=".json,application/json" hidden>
-    <p class="hint">Custom filters are stored in localStorage, so they remain after refresh on this device.</p>
   </div>
-</div>
-<script src="filters/filters.js"></script>
-<script src="app.js"></script>
-</body></html>
+
+
+  <!-- SCRIPTS -->
+  <script src="filters.js"></script>
+  <script src="app.js"></script>
+
+</body>
+</html>
