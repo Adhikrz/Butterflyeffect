@@ -1,1574 +1,3017 @@
-const $ = id => document.getElementById(id);
+/* ============================================================
+   BUTTERFLYEFFECT V3
+   Procedural Photo Skin Engine
+   ------------------------------------------------------------
+   Pure browser JavaScript / Canvas
+   No external libraries
+   ============================================================ */
 
-const canvas = $("canvas");
-const ctx = canvas.getContext("2d", {
-  willReadFrequently: true
-});
+"use strict";
 
-let filters = [...window.FILTERS];
+/* ------------------------------------------------------------
+   DOM
+------------------------------------------------------------ */
 
-let selected = 0;
+const sourceInput =
+    document.getElementById("sourceInput") ||
+    document.getElementById("fileInput") ||
+    document.querySelector('input[type="file"]');
 
-let img = null;
+const sourceCanvas =
+    document.getElementById("sourceCanvas") ||
+    document.getElementById("previewCanvas") ||
+    document.getElementById("canvas");
 
-let intensity = 1;
+const outputCanvas =
+    document.getElementById("outputCanvas") ||
+    document.getElementById("resultCanvas") ||
+    sourceCanvas;
 
-let before = false;
+const sourceCtx = sourceCanvas ? sourceCanvas.getContext("2d", { willReadFrequently: true }) : null;
+const outputCtx = outputCanvas ? outputCanvas.getContext("2d", { willReadFrequently: true }) : null;
+
+let originalImage = null;
+let originalData = null;
+let currentFilter = null;
+let currentImageData = null;
+
+let MAX_PREVIEW = 900;
 
 
-/* =========================================
-   FILTER LIST
-========================================= */
+/* ============================================================
+   BASIC UTILITIES
+============================================================ */
 
-function renderList(query = "") {
+function clamp(v, min = 0, max = 255) {
+    return Math.max(min, Math.min(max, v));
+}
 
-  const list = $("filterList");
+function lerp(a, b, t) {
+    return a + (b - a) * t;
+}
 
-  list.innerHTML = "";
+function smoothstep(a, b, x) {
+    x = clamp((x - a) / (b - a), 0, 1);
+    return x * x * (3 - 2 * x);
+}
 
-  filters.forEach((filter, index) => {
+function hash(x, y, seed = 1) {
+    let n = Math.sin(x * 127.1 + y * 311.7 + seed * 74.7) * 43758.5453;
+    return n - Math.floor(n);
+}
 
-    if (
-      query &&
-      !filter.name
-        .toLowerCase()
-        .includes(query.toLowerCase())
-    ) {
-      return;
-    }
+function noise(x, y, seed = 1) {
+    const x0 = Math.floor(x);
+    const y0 = Math.floor(y);
 
-    const item = document.createElement("div");
+    const fx = x - x0;
+    const fy = y - y0;
 
-    item.className =
-      "filter-item" +
-      (index === selected ? " active" : "");
+    const a = hash(x0, y0, seed);
+    const b = hash(x0 + 1, y0, seed);
+    const c = hash(x0, y0 + 1, seed);
+    const d = hash(x0 + 1, y0 + 1, seed);
 
-    item.innerHTML = `
-      <span>${String(filter.id).padStart(2, "0")}</span>
-      ${filter.name}
-    `;
+    const ux = fx * fx * (3 - 2 * fx);
+    const uy = fy * fy * (3 - 2 * fy);
 
-    item.onclick = () => {
+    return lerp(
+        lerp(a, b, ux),
+        lerp(c, d, ux),
+        uy
+    );
+}
 
-      selected = index;
+function cloneData(img) {
+    return new ImageData(
+        new Uint8ClampedArray(img.data),
+        img.width,
+        img.height
+    );
+}
 
-      before = false;
+function gray(r, g, b) {
+    return r * 0.2126 + g * 0.7152 + b * 0.0722;
+}
 
-      $("beforeBtn").textContent = "BEFORE";
+function createData(w, h) {
+    return new ImageData(w, h);
+}
 
-      renderList($("search").value);
-
-      draw();
-
-    };
-
-    list.appendChild(item);
-
-  });
-
-  $("count").textContent = filters.length;
-
+function pixelIndex(x, y, w) {
+    return (y * w + x) * 4;
 }
 
 
-/* =========================================
-   IMAGE
-========================================= */
+/* ============================================================
+   IMAGE DATA HELPERS
+============================================================ */
+
+function mapPixels(img, fn) {
+    const out = cloneData(img);
+    const d = img.data;
+    const o = out.data;
+
+    for (let y = 0; y < img.height; y++) {
+        for (let x = 0; x < img.width; x++) {
+            const i = (y * img.width + x) * 4;
+
+            const result = fn(
+                d[i],
+                d[i + 1],
+                d[i + 2],
+                x,
+                y,
+                img.width,
+                img.height
+            );
+
+            o[i] = clamp(result[0]);
+            o[i + 1] = clamp(result[1]);
+            o[i + 2] = clamp(result[2]);
+            o[i + 3] = d[i + 3];
+        }
+    }
+
+    return out;
+}
+
+function blend(a, b, amount = 1) {
+    amount = clamp(amount, 0, 1);
+
+    const out = cloneData(a);
+
+    for (let i = 0; i < a.data.length; i += 4) {
+        out.data[i] =
+            lerp(a.data[i], b.data[i], amount);
+
+        out.data[i + 1] =
+            lerp(a.data[i + 1], b.data[i + 1], amount);
+
+        out.data[i + 2] =
+            lerp(a.data[i + 2], b.data[i + 2], amount);
+
+        out.data[i + 3] = 255;
+    }
+
+    return out;
+}
+
+function sample(img, x, y) {
+    x = Math.round(clamp(x, 0, img.width - 1));
+    y = Math.round(clamp(y, 0, img.height - 1));
+
+    const i = (y * img.width + x) * 4;
+
+    return [
+        img.data[i],
+        img.data[i + 1],
+        img.data[i + 2]
+    ];
+}
+
+
+/* ============================================================
+   COLOUR PALETTES
+============================================================ */
+
+function palette(img, stops) {
+    return mapPixels(img, (r, g, b) => {
+
+        const v = gray(r, g, b) / 255;
+
+        let a = stops[0];
+        let z = stops[stops.length - 1];
+
+        for (let i = 0; i < stops.length - 1; i++) {
+            if (v >= stops[i][0] && v <= stops[i + 1][0]) {
+                a = stops[i];
+                z = stops[i + 1];
+                break;
+            }
+        }
+
+        const t = smoothstep(
+            a[0],
+            z[0],
+            v
+        );
+
+        return [
+            lerp(a[1][0], z[1][0], t),
+            lerp(a[1][1], z[1][1], t),
+            lerp(a[1][2], z[1][2], t)
+        ];
+    });
+}
+
+function thermal(img) {
+    return palette(img, [
+        [0.00, [8, 8, 30]],
+        [0.20, [0, 50, 180]],
+        [0.40, [0, 220, 255]],
+        [0.58, [30, 255, 70]],
+        [0.72, [255, 230, 0]],
+        [0.86, [255, 80, 0]],
+        [1.00, [255, 255, 255]]
+    ]);
+}
+
+function cyanotype(img) {
+    return palette(img, [
+        [0.00, [4, 15, 30]],
+        [0.35, [12, 55, 90]],
+        [0.70, [40, 120, 170]],
+        [1.00, [190, 235, 255]]
+    ]);
+}
+
+function redscale(img) {
+    return palette(img, [
+        [0.00, [15, 0, 0]],
+        [0.30, [100, 8, 5]],
+        [0.65, [220, 35, 8]],
+        [1.00, [255, 190, 90]]
+    ]);
+}
+
+function poison(img) {
+    return palette(img, [
+        [0.00, [0, 8, 0]],
+        [0.35, [5, 70, 20]],
+        [0.70, [40, 190, 70]],
+        [1.00, [190, 255, 150]]
+    ]);
+}
+
+function pink(img) {
+    return palette(img, [
+        [0.00, [25, 0, 30]],
+        [0.35, [100, 5, 100]],
+        [0.70, [235, 30, 150]],
+        [1.00, [255, 220, 245]]
+    ]);
+}
+
+function amber(img) {
+    return palette(img, [
+        [0.00, [20, 5, 0]],
+        [0.35, [100, 30, 0]],
+        [0.70, [230, 120, 10]],
+        [1.00, [255, 240, 160]]
+    ]);
+}
+
+
+/* ============================================================
+   NEGATIVE / CHANNEL EFFECTS
+============================================================ */
+
+function negative(img) {
+    return mapPixels(img, (r, g, b) => [
+        255 - r,
+        255 - g,
+        255 - b
+    ]);
+}
+
+function blueNegative(img) {
+    const n = negative(img);
+
+    return mapPixels(n, (r, g, b) => [
+        b * 0.25,
+        g * 0.45,
+        b
+    ]);
+}
+
+function channelShift(img, amount = 12) {
+    const out = createData(img.width, img.height);
+
+    for (let y = 0; y < img.height; y++) {
+        for (let x = 0; x < img.width; x++) {
+
+            const r = sample(img, x - amount, y);
+            const g = sample(img, x, y);
+            const b = sample(img, x + amount, y);
+
+            const i = pixelIndex(x, y, img.width);
+
+            out.data[i] = r[0];
+            out.data[i + 1] = g[1];
+            out.data[i + 2] = b[2];
+            out.data[i + 3] = 255;
+        }
+    }
+
+    return out;
+}
+
+
+/* ============================================================
+   EDGE / ENGRAVING
+============================================================ */
+
+function edgeMap(img) {
+    const out = createData(img.width, img.height);
+
+    for (let y = 1; y < img.height - 1; y++) {
+        for (let x = 1; x < img.width - 1; x++) {
+
+            const a = gray(...sample(img, x - 1, y - 1));
+            const b = gray(...sample(img, x, y - 1));
+            const c = gray(...sample(img, x + 1, y - 1));
+
+            const d = gray(...sample(img, x - 1, y));
+            const f = gray(...sample(img, x + 1, y));
+
+            const g = gray(...sample(img, x - 1, y + 1));
+            const h = gray(...sample(img, x, y + 1));
+            const j = gray(...sample(img, x + 1, y + 1));
+
+            const gx =
+                -a + c -
+                2 * d + 2 * f -
+                g + j;
+
+            const gy =
+                -a - 2 * b - c +
+                g + 2 * h + j;
+
+            const e = clamp(Math.sqrt(gx * gx + gy * gy));
+
+            const i = pixelIndex(x, y, img.width);
+
+            out.data[i] = e;
+            out.data[i + 1] = e;
+            out.data[i + 2] = e;
+            out.data[i + 3] = 255;
+        }
+    }
+
+    return out;
+}
+
+function engraving(img) {
+
+    const edges = edgeMap(img);
+    const out = createData(img.width, img.height);
+
+    for (let y = 0; y < img.height; y++) {
+        for (let x = 0; x < img.width; x++) {
+
+            const i = pixelIndex(x, y, img.width);
+
+            const e = edges.data[i];
+            const line =
+                Math.sin(
+                    (x * 0.13) +
+                    (y * 0.045)
+                );
+
+            const darkness =
+                e * 0.75 +
+                Math.max(0, line) * 70;
+
+            out.data[i] = clamp(235 - darkness);
+            out.data[i + 1] = clamp(225 - darkness);
+            out.data[i + 2] = clamp(195 - darkness);
+            out.data[i + 3] = 255;
+        }
+    }
+
+    return out;
+}
+
+function emboss(img) {
+
+    const out = createData(img.width, img.height);
+
+    for (let y = 1; y < img.height - 1; y++) {
+        for (let x = 1; x < img.width - 1; x++) {
+
+            const a = gray(...sample(img, x - 1, y - 1));
+            const b = gray(...sample(img, x + 1, y + 1));
+
+            const v = 128 + (a - b);
+
+            const i = pixelIndex(x, y, img.width);
+
+            out.data[i] = v;
+            out.data[i + 1] = v;
+            out.data[i + 2] = v;
+            out.data[i + 3] = 255;
+        }
+    }
+
+    return out;
+}
+
+
+/* ============================================================
+   GEOMETRIC DISTORTION
+============================================================ */
+
+function warp(img, fn) {
+
+    const out = createData(img.width, img.height);
+
+    for (let y = 0; y < img.height; y++) {
+        for (let x = 0; x < img.width; x++) {
+
+            const p = fn(x, y, img.width, img.height);
+
+            const c = sample(
+                img,
+                p[0],
+                p[1]
+            );
+
+            const i = pixelIndex(x, y, img.width);
+
+            out.data[i] = c[0];
+            out.data[i + 1] = c[1];
+            out.data[i + 2] = c[2];
+            out.data[i + 3] = 255;
+        }
+    }
+
+    return out;
+}
+
+function liquidWarp(img, strength = 25) {
+
+    return warp(img, (x, y, w, h) => {
+
+        const nx = x / w;
+        const ny = y / h;
+
+        const dx =
+            Math.sin(ny * 18 + nx * 5) *
+            strength;
+
+        const dy =
+            Math.cos(nx * 15 + ny * 7) *
+            strength * 0.5;
+
+        return [
+            x + dx,
+            y + dy
+        ];
+    });
+}
+
+function crumple(img) {
+
+    return warp(img, (x, y, w, h) => {
+
+        const n =
+            noise(
+                x * 0.018,
+                y * 0.018,
+                44
+            );
+
+        const dx =
+            (n - 0.5) * 45;
+
+        const dy =
+            (noise(
+                x * 0.015,
+                y * 0.015,
+                88
+            ) - 0.5) * 45;
+
+        return [
+            x + dx,
+            y + dy
+        ];
+    });
+}
+
+function slitScan(img) {
+
+    const out = createData(img.width, img.height);
+
+    for (let y = 0; y < img.height; y++) {
+
+        const displacement =
+            Math.sin(y * 0.035) * 90 +
+            Math.sin(y * 0.11) * 25;
+
+        for (let x = 0; x < img.width; x++) {
+
+            const c =
+                sample(
+                    img,
+                    x + displacement,
+                    y
+                );
+
+            const i =
+                pixelIndex(x, y, img.width);
+
+            out.data[i] = c[0];
+            out.data[i + 1] = c[1];
+            out.data[i + 2] = c[2];
+            out.data[i + 3] = 255;
+        }
+    }
+
+    return out;
+}
+
+function lenticular(img) {
+
+    return warp(img, (x, y, w, h) => {
+
+        const shift =
+            Math.sin(y * 0.22) * 9;
+
+        return [
+            x + shift,
+            y
+        ];
+    });
+}
+
+
+/* ============================================================
+   PIXEL SORT
+============================================================ */
+
+function pixelSort(img) {
+
+    const out = cloneData(img);
+    const w = img.width;
+
+    const block = 28;
+
+    for (let y = 0; y < img.height; y++) {
+
+        for (let start = 0; start < w; start += block) {
+
+            const end =
+                Math.min(start + block, w);
+
+            const pixels = [];
+
+            for (let x = start; x < end; x++) {
+
+                const i =
+                    pixelIndex(x, y, w);
+
+                pixels.push([
+                    img.data[i],
+                    img.data[i + 1],
+                    img.data[i + 2]
+                ]);
+            }
+
+            pixels.sort(
+                (a, b) =>
+                    gray(...a) - gray(...b)
+            );
+
+            for (let x = start; x < end; x++) {
+
+                const p = pixels[x - start];
+
+                const i =
+                    pixelIndex(x, y, w);
+
+                out.data[i] = p[0];
+                out.data[i + 1] = p[1];
+                out.data[i + 2] = p[2];
+            }
+        }
+    }
+
+    return out;
+}
+
+
+/* ============================================================
+   DITHERING
+============================================================ */
+
+const BAYER = [
+    [0, 8, 2, 10],
+    [12, 4, 14, 6],
+    [3, 11, 1, 9],
+    [15, 7, 13, 5]
+];
+
+function dither(img, levels = 4) {
+
+    return mapPixels(img, (r, g, b, x, y) => {
+
+        const threshold =
+            (BAYER[y % 4][x % 4] / 16 - 0.5) * 255;
+
+        const q = v =>
+            Math.round(
+                (v + threshold) /
+                (255 / (levels - 1))
+            ) *
+            (255 / (levels - 1));
+
+        return [
+            q(r),
+            q(g),
+            q(b)
+        ];
+    });
+}
+
+
+/* ============================================================
+   HALFTONE
+============================================================ */
+
+function halftone(img, cell = 8) {
+
+    const out = createData(
+        img.width,
+        img.height
+    );
+
+    const ctx =
+        document.createElement("canvas")
+            .getContext("2d");
+
+    const canvas = ctx.canvas;
+
+    canvas.width = img.width;
+    canvas.height = img.height;
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(
+        0,
+        0,
+        img.width,
+        img.height
+    );
+
+    ctx.fillStyle = "#050505";
+
+    for (let y = 0; y < img.height; y += cell) {
+        for (let x = 0; x < img.width; x += cell) {
+
+            const c =
+                sample(
+                    img,
+                    x + cell / 2,
+                    y + cell / 2
+                );
+
+            const lum =
+                gray(...c) / 255;
+
+            const radius =
+                (1 - lum) *
+                cell *
+                0.62;
+
+            ctx.beginPath();
+
+            ctx.arc(
+                x + cell / 2,
+                y + cell / 2,
+                radius,
+                0,
+                Math.PI * 2
+            );
+
+            ctx.fill();
+        }
+    }
+
+    return ctx.getImageData(
+        0,
+        0,
+        img.width,
+        img.height
+    );
+}
+
+
+/* ============================================================
+   LED MATRIX
+============================================================ */
+
+function ledMatrix(img) {
+
+    const out =
+        document.createElement("canvas");
+
+    out.width = img.width;
+    out.height = img.height;
+
+    const ctx = out.getContext("2d");
+
+    ctx.fillStyle = "#020509";
+    ctx.fillRect(
+        0,
+        0,
+        img.width,
+        img.height
+    );
+
+    const cell = 7;
+
+    for (let y = 0; y < img.height; y += cell) {
+        for (let x = 0; x < img.width; x += cell) {
+
+            const c =
+                sample(
+                    img,
+                    x,
+                    y
+                );
+
+            const lum =
+                gray(...c) / 255;
+
+            const r =
+                cell * 0.34 *
+                (0.2 + lum);
+
+            ctx.beginPath();
+
+            ctx.fillStyle =
+                `rgb(${c[0]},${c[1]},${c[2]})`;
+
+            ctx.arc(
+                x + cell / 2,
+                y + cell / 2,
+                r,
+                0,
+                Math.PI * 2
+            );
+
+            ctx.fill();
+        }
+    }
+
+    return out.getContext("2d")
+        .getImageData(
+            0,
+            0,
+            img.width,
+            img.height
+        );
+}
+
+
+/* ============================================================
+   CROSS STITCH
+============================================================ */
+
+function crossStitch(img, dropped = false) {
+
+    const canvas =
+        document.createElement("canvas");
+
+    canvas.width = img.width;
+    canvas.height = img.height;
+
+    const ctx =
+        canvas.getContext("2d");
+
+    ctx.fillStyle = "#e8dfcc";
+    ctx.fillRect(
+        0,
+        0,
+        img.width,
+        img.height
+    );
+
+    const size = 9;
+
+    for (let y = 0; y < img.height; y += size) {
+
+        for (let x = 0; x < img.width; x += size) {
+
+            if (
+                dropped &&
+                hash(x, y, 55) < 0.16
+            ) continue;
+
+            const c =
+                sample(
+                    img,
+                    x + size / 2,
+                    y + size / 2
+                );
+
+            ctx.strokeStyle =
+                `rgb(${c[0]},${c[1]},${c[2]})`;
+
+            ctx.lineWidth = 2;
+
+            ctx.beginPath();
+
+            ctx.moveTo(x + 2, y + 2);
+            ctx.lineTo(x + size - 2, y + size - 2);
+
+            ctx.moveTo(x + size - 2, y + 2);
+            ctx.lineTo(x + 2, y + size - 2);
+
+            ctx.stroke();
+        }
+    }
+
+    return canvas.getContext("2d")
+        .getImageData(
+            0,
+            0,
+            img.width,
+            img.height
+        );
+}
+
+
+/* ============================================================
+   VOXEL RELIEF
+============================================================ */
+
+function voxel(img) {
+
+    const canvas =
+        document.createElement("canvas");
+
+    canvas.width = img.width;
+    canvas.height = img.height;
+
+    const ctx =
+        canvas.getContext("2d");
+
+    ctx.fillStyle = "#111";
+    ctx.fillRect(
+        0,
+        0,
+        img.width,
+        img.height
+    );
+
+    const size = 14;
+
+    for (let y = 0; y < img.height; y += size) {
+
+        for (let x = 0; x < img.width; x += size) {
+
+            const c =
+                sample(
+                    img,
+                    x + size / 2,
+                    y + size / 2
+                );
+
+            const lum =
+                gray(...c) / 255;
+
+            const depth =
+                lum * 8;
+
+            ctx.fillStyle =
+                `rgb(${c[0]},${c[1]},${c[2]})`;
+
+            ctx.fillRect(
+                x,
+                y - depth,
+                size,
+                size
+            );
+
+            ctx.fillStyle =
+                `rgba(255,255,255,${lum * 0.25})`;
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                x,
+                y - depth
+            );
+
+            ctx.lineTo(
+                x + size,
+                y - depth
+            );
+
+            ctx.lineTo(
+                x + size - 3,
+                y - depth + 3
+            );
+
+            ctx.lineTo(
+                x + 3,
+                y - depth + 3
+            );
+
+            ctx.closePath();
+
+            ctx.fill();
+        }
+    }
+
+    return canvas.getContext("2d")
+        .getImageData(
+            0,
+            0,
+            img.width,
+            img.height
+        );
+}
+
+
+/* ============================================================
+   PINSCREEN
+============================================================ */
+
+function pinscreen(img) {
+
+    const canvas =
+        document.createElement("canvas");
+
+    canvas.width = img.width;
+    canvas.height = img.height;
+
+    const ctx =
+        canvas.getContext("2d");
+
+    ctx.fillStyle = "#d7d7d0";
+
+    ctx.fillRect(
+        0,
+        0,
+        img.width,
+        img.height
+    );
+
+    const size = 10;
+
+    for (let y = 0; y < img.height; y += size) {
+
+        for (let x = 0; x < img.width; x += size) {
+
+            const c =
+                sample(img, x, y);
+
+            const lum =
+                gray(...c) / 255;
+
+            const radius =
+                (1 - lum) *
+                size *
+                0.45;
+
+            ctx.fillStyle =
+                `rgb(${c[0]},${c[1]},${c[2]})`;
+
+            ctx.beginPath();
+
+            ctx.arc(
+                x + size / 2,
+                y + size / 2,
+                radius,
+                0,
+                Math.PI * 2
+            );
+
+            ctx.fill();
+        }
+    }
+
+    return canvas.getContext("2d")
+        .getImageData(
+            0,
+            0,
+            img.width,
+            img.height
+        );
+}
+
+
+/* ============================================================
+   CHROME
+============================================================ */
+
+function chrome(img) {
+
+    let w = liquidWarp(img, 32);
+
+    w = mapPixels(w, (r, g, b, x, y, width, height) => {
+
+        const v =
+            gray(r, g, b) / 255;
+
+        const wave =
+            Math.sin(
+                y * 0.06 +
+                x * 0.012
+            );
+
+        const shine =
+            Math.pow(
+                Math.max(0, wave),
+                5
+            );
+
+        return [
+            v * 130 + shine * 125,
+            v * 140 + shine * 130,
+            v * 155 + shine * 140
+        ];
+    });
+
+    return w;
+}
+
+
+/* ============================================================
+   RORSCHACH
+============================================================ */
+
+function rorschach(img) {
+
+    const out =
+        createData(
+            img.width,
+            img.height
+        );
+
+    const mid =
+        img.width / 2;
+
+    for (let y = 0; y < img.height; y++) {
+
+        for (let x = 0; x < img.width; x++) {
+
+            const mirroredX =
+                x < mid
+                    ? x
+                    : img.width - x - 1;
+
+            const c =
+                sample(
+                    img,
+                    mirroredX,
+                    y
+                );
+
+            const i =
+                pixelIndex(
+                    x,
+                    y,
+                    img.width
+                );
+
+            out.data[i] = c[0];
+            out.data[i + 1] = c[1];
+            out.data[i + 2] = c[2];
+            out.data[i + 3] = 255;
+        }
+    }
+
+    return chrome(out);
+}
+
+
+/* ============================================================
+   DEAD PIXELS / DIGITAL ROT
+============================================================ */
+
+function deadPixels(img) {
+
+    const out = cloneData(img);
+
+    for (let y = 0; y < img.height; y++) {
+
+        for (let x = 0; x < img.width; x++) {
+
+            if (
+                hash(
+                    Math.floor(x / 5),
+                    Math.floor(y / 5),
+                    19
+                ) > 0.985
+            ) {
+
+                const i =
+                    pixelIndex(
+                        x,
+                        y,
+                        img.width
+                    );
+
+                out.data[i] = 255;
+                out.data[i + 1] = 0;
+                out.data[i + 2] = 100;
+            }
+        }
+    }
+
+    return out;
+}
+
+
+/* ============================================================
+   GLITCH SLICES
+============================================================ */
+
+function hyperSlice(img) {
+
+    const out = cloneData(img);
+
+    const sliceHeight = 8;
+
+    for (
+        let y = 0;
+        y < img.height;
+        y += sliceHeight
+    ) {
+
+        const shift =
+            (hash(
+                y,
+                42,
+                9
+            ) - 0.5) * 180;
+
+        for (
+            let yy = y;
+            yy < Math.min(
+                y + sliceHeight,
+                img.height
+            );
+            yy++
+        ) {
+
+            for (
+                let x = 0;
+                x < img.width;
+                x++
+            ) {
+
+                const sx =
+                    Math.round(
+                        x + shift
+                    );
+
+                if (
+                    sx < 0 ||
+                    sx >= img.width
+                ) continue;
+
+                const a =
+                    pixelIndex(
+                        sx,
+                        yy,
+                        img.width
+                    );
+
+                const b =
+                    pixelIndex(
+                        x,
+                        yy,
+                        img.width
+                    );
+
+                out.data[b] =
+                    img.data[a];
+
+                out.data[b + 1] =
+                    img.data[a + 1];
+
+                out.data[b + 2] =
+                    img.data[a + 2];
+            }
+        }
+    }
+
+    return channelShift(out, 7);
+}
+
+/* ============================================================
+   FILM / NOISE
+============================================================ */
+
+function grain(img, amount = 20) {
+
+    return mapPixels(
+        img,
+        (r, g, b, x, y) => {
+
+            const n =
+                (hash(x, y, 77) - 0.5) *
+                amount;
+
+            return [
+                r + n,
+                g + n,
+                b + n
+            ];
+        }
+    );
+}
+
+function filmSoup(img) {
+
+    let out =
+        crumple(img);
+
+    out =
+        grain(out, 32);
+
+    return mapPixels(
+        out,
+        (r, g, b, x, y) => {
+
+            const blot =
+                noise(
+                    x * 0.025,
+                    y * 0.025,
+                    120
+                );
+
+            return [
+                r * (0.7 + blot * 0.5),
+                g * (0.72 + blot * 0.45),
+                b * (0.68 + blot * 0.55)
+            ];
+        }
+    );
+}
+
+
+/* ============================================================
+   FOG / BLOOM
+============================================================ */
+
+function blur(img, amount = 6) {
+
+    const canvas =
+        document.createElement("canvas");
+
+    canvas.width = img.width;
+    canvas.height = img.height;
+
+    const ctx =
+        canvas.getContext("2d");
+
+    ctx.filter =
+        `blur(${amount}px)`;
+
+    ctx.putImageData(
+        img,
+        0,
+        0
+    );
+
+    return ctx.getImageData(
+        0,
+        0,
+        img.width,
+        img.height
+    );
+}
+
+function bloom(img) {
+
+    const b =
+        blur(img, 10);
+
+    return blend(
+        img,
+        b,
+        0.42
+    );
+}
+
+function fog(img) {
+
+    const b =
+        blur(img, 16);
+
+    return mapPixels(
+        blend(img, b, 0.55),
+        (r, g, b, x, y) => {
+
+            const n =
+                noise(
+                    x * 0.008,
+                    y * 0.008,
+                    30
+                );
+
+            return [
+                r + n * 40,
+                g + n * 40,
+                b + n * 45
+            ];
+        }
+    );
+}
+
+
+/* ============================================================
+   POSTER / PRINT
+============================================================ */
+
+function posterize(img, levels = 5) {
+
+    const step =
+        255 / (levels - 1);
+
+    return mapPixels(
+        img,
+        (r, g, b) => [
+            Math.round(r / step) * step,
+            Math.round(g / step) * step,
+            Math.round(b / step) * step
+        ]
+    );
+}
+
+function threeInks(img) {
+
+    const p =
+        posterize(img, 3);
+
+    return palette(
+        p,
+        [
+            [0, [15, 20, 25]],
+            [0.35, [180, 20, 80]],
+            [0.68, [20, 150, 170]],
+            [1, [245, 230, 150]]
+        ]
+    );
+}
+
+function stencil(img) {
+
+    const e =
+        edgeMap(img);
+
+    return mapPixels(
+        img,
+        (r, g, b) => {
+
+            const v =
+                gray(r, g, b);
+
+            if (v < 100)
+                return [10, 5, 30];
+
+            return [
+                255,
+                20,
+                190
+            ];
+        }
+    );
+}
+
+/* ============================================================
+   PAPER / COLLAGE
+============================================================ */
+
+function collage(img) {
+
+    const out =
+        cloneData(img);
+
+    const block = 55;
+
+    for (
+        let y = 0;
+        y < img.height;
+        y += block
+    ) {
+
+        for (
+            let x = 0;
+            x < img.width;
+            x += block
+        ) {
+
+            const shift =
+                (hash(x, y, 66) - 0.5) *
+                35;
+
+            for (
+                let yy = y;
+                yy < Math.min(
+                    y + block,
+                    img.height
+                );
+                yy++
+            ) {
+
+                for (
+                    let xx = x;
+                    xx < Math.min(
+                        x + block,
+                        img.width
+                    );
+                    xx++
+                ) {
+
+                    const c =
+                        sample(
+                            img,
+                            xx + shift,
+                            yy
+                        );
+
+                    const i =
+                        pixelIndex(
+                            xx,
+                            yy,
+                            img.width
+                        );
+
+                    out.data[i] = c[0];
+                    out.data[i + 1] = c[1];
+                    out.data[i + 2] = c[2];
+                }
+            }
+        }
+    }
+
+    return out;
+}
+
+
+/* ============================================================
+   BUBBLE WRAP
+============================================================ */
+
+function bubbles(img) {
+
+    const canvas =
+        document.createElement("canvas");
+
+    canvas.width = img.width;
+    canvas.height = img.height;
+
+    const ctx =
+        canvas.getContext("2d");
+
+    ctx.putImageData(
+        img,
+        0,
+        0
+    );
+
+    const size = 22;
+
+    for (
+        let y = 0;
+        y < img.height;
+        y += size
+    ) {
+
+        for (
+            let x = 0;
+            x < img.width;
+            x += size
+        ) {
+
+            ctx.strokeStyle =
+                "rgba(255,255,255,.45)";
+
+            ctx.lineWidth = 2;
+
+            ctx.beginPath();
+
+            ctx.arc(
+                x + size / 2,
+                y + size / 2,
+                size * 0.38,
+                0,
+                Math.PI * 2
+            );
+
+            ctx.stroke();
+        }
+    }
+
+    return ctx.getImageData(
+        0,
+        0,
+        img.width,
+        img.height
+    );
+}
+
+/* ============================================================
+   JACQUARD / WEAVE
+============================================================ */
+
+function jacquard(img) {
+
+    const canvas =
+        document.createElement("canvas");
+
+    canvas.width = img.width;
+    canvas.height = img.height;
+
+    const ctx =
+        canvas.getContext("2d");
+
+    ctx.putImageData(
+        img,
+        0,
+        0
+    );
+
+    const size = 6;
+
+    for (
+        let y = 0;
+        y < img.height;
+        y += size
+    ) {
+
+        ctx.strokeStyle =
+            "rgba(255,255,255,.22)";
+
+        ctx.lineWidth = 1;
+
+        ctx.beginPath();
+
+        ctx.moveTo(0, y);
+        ctx.lineTo(img.width, y);
+
+        ctx.stroke();
+    }
+
+    for (
+        let x = 0;
+        x < img.width;
+        x += size
+    ) {
+
+        ctx.strokeStyle =
+            "rgba(0,0,0,.25)";
+
+        ctx.beginPath();
+
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, img.height);
+
+        ctx.stroke();
+    }
+
+    return ctx.getImageData(
+        0,
+        0,
+        img.width,
+        img.height
+    );
+}
+
+
+/* ============================================================
+   CONTOUR / SCIENTIFIC
+============================================================ */
+
+function contour(img) {
+
+    const edges =
+        edgeMap(img);
+
+    return palette(
+        edges,
+        [
+            [0, [0, 0, 0]],
+            [0.3, [0, 50, 120]],
+            [0.55, [0, 220, 255]],
+            [0.75, [255, 220, 0]],
+            [1, [255, 30, 20]]
+        ]
+    );
+}
+
+
+/* ============================================================
+   SPECIAL EFFECTS
+============================================================ */
+
+function auraGradient(img) {
+
+    return mapPixels(
+        img,
+        (r, g, b, x, y, w, h) => {
+
+            const dx =
+                x / w - 0.5;
+
+            const dy =
+                y / h - 0.5;
+
+            const dist =
+                Math.sqrt(
+                    dx * dx +
+                    dy * dy
+                );
+
+            const glow =
+                Math.max(
+                    0,
+                    1 - dist * 1.7
+                );
+
+            return [
+                r + glow * 55,
+                g + glow * 20,
+                b + glow * 80
+            ];
+        }
+    );
+}
+
+function giallo(img) {
+
+    return palette(img, [
+        [0, [15, 5, 5]],
+        [0.35, [110, 25, 5]],
+        [0.65, [230, 130, 10]],
+        [1, [255, 245, 120]]
+    ]);
+}
+
+function twoStrip(img) {
+
+    return palette(img, [
+        [0, [10, 35, 45]],
+        [0.5, [20, 130, 150]],
+        [1, [255, 120, 50]]
+    ]);
+}
+
+function aerochrome(img) {
+
+    return mapPixels(
+        img,
+        (r, g, b) => [
+            clamp(g * 1.3 + b * 0.15),
+            clamp(r * 0.35 + g * 0.5),
+            clamp(r * 1.15)
+        ]
+    );
+}
+
+function inkBloom(img) {
+
+    return mapPixels(
+        img,
+        (r, g, b, x, y) => {
+
+            const v =
+                gray(r, g, b);
+
+            const n =
+                noise(
+                    x * 0.025,
+                    y * 0.025,
+                    10
+                ) * 80;
+
+            const q =
+                v + n;
+
+            return q > 125
+                ? [240, 235, 220]
+                : [15, 20, 40];
+        }
+    );
+}
+
+function photogram(img) {
+
+    return mapPixels(
+        img,
+        (r, g, b) => {
+
+            const v =
+                gray(r, g, b);
+
+            return [
+                v > 110 ? 245 : 20,
+                v > 110 ? 240 : 25,
+                v > 110 ? 220 : 35
+            ];
+        }
+    );
+}
+
+function heatTrace(img) {
+
+    return contour(
+        edgeMap(img)
+    );
+}
+
+function scanLines(img) {
+
+    const out =
+        cloneData(img);
+
+    for (
+        let y = 0;
+        y < img.height;
+        y++
+    ) {
+
+        const factor =
+            y % 4 === 0
+                ? 0.55
+                : 1;
+
+        for (
+            let x = 0;
+            x < img.width;
+            x++
+        ) {
+
+            const i =
+                pixelIndex(
+                    x,
+                    y,
+                    img.width
+                );
+
+            out.data[i] *= factor;
+            out.data[i + 1] *= factor;
+            out.data[i + 2] *= factor;
+        }
+    }
+
+    return out;
+}
+
+function herbarium(img) {
+
+    return palette(img, [
+        [0, [15, 25, 10]],
+        [0.4, [70, 90, 35]],
+        [0.75, [160, 150, 85]],
+        [1, [235, 220, 160]]
+    ]);
+}
+
+function densityMap(img) {
+
+    return thermal(
+        blur(img, 4)
+    );
+}
+
+function paintByNumber(img) {
+
+    const out =
+        posterize(img, 5);
+
+    const edges =
+        edgeMap(img);
+
+    return blend(
+        out,
+        edges,
+        0.38
+    );
+}
+
+function encyclopedia(img) {
+
+    return blend(
+        palette(img, [
+            [0, [20, 25, 30]],
+            [0.5, [90, 100, 100]],
+            [1, [240, 225, 185]]
+        ]),
+        edgeMap(img),
+        0.25
+    );
+}
+
+function redaction(img) {
+
+    const out =
+        cloneData(img);
+
+    const barHeight = 10;
+
+    for (
+        let y = 0;
+        y < img.height;
+        y++
+    ) {
+
+        if (
+            hash(
+                Math.floor(y / 25),
+                9,
+                21
+            ) > 0.68
+        ) {
+
+            for (
+                let yy = y;
+                yy < Math.min(
+                    y + barHeight,
+                    img.height
+                );
+                yy++
+            ) {
+
+                for (
+                    let x = 0;
+                    x < img.width;
+                    x++
+                ) {
+
+                    const i =
+                        pixelIndex(
+                            x,
+                            yy,
+                            img.width
+                        );
+
+                    out.data[i] = 5;
+                    out.data[i + 1] = 5;
+                    out.data[i + 2] = 5;
+                }
+            }
+        }
+    }
+
+    return out;
+}
+
+function toon(img) {
+
+    return blend(
+        posterize(img, 6),
+        edgeMap(img),
+        0.4
+    );
+}
+
+function sticker(img) {
+
+    return blend(
+        posterize(img, 5),
+        edgeMap(img),
+        0.3
+    );
+}
+
+function specimen(img) {
+
+    return encyclopedia(img);
+}
+
+function vhs(img) {
+
+    return channelShift(
+        scanLines(
+            grain(img, 35)
+        ),
+        5
+    );
+}
+
+function splitHalftone(img) {
+
+    const h =
+        halftone(img, 8);
+
+    return channelShift(
+        h,
+        16
+    );
+}
+
+function teletext(img) {
+
+    return dither(
+        posterize(img, 4),
+        4
+    );
+}
+
+function fogSilhouette(img) {
+
+    return mapPixels(
+        img,
+        (r, g, b, x, y) => {
+
+            const v =
+                gray(r, g, b);
+
+            const fog =
+                noise(
+                    x * 0.01,
+                    y * 0.01,
+                    77
+                ) * 70;
+
+            if (v + fog < 100)
+                return [5, 5, 15];
+
+            return [
+                160 + fog,
+                170 + fog,
+                190 + fog
+            ];
+        }
+    );
+}
+
+function forensic(img) {
+
+    return blend(
+        mapPixels(
+            img,
+            (r, g, b) => {
+                const v =
+                    gray(r, g, b);
+
+                return [v, v, v];
+            }
+        ),
+        edgeMap(img),
+        0.5
+    );
+}
+
+function autochrome(img) {
+
+    const canvas =
+        document.createElement("canvas");
+
+    canvas.width = img.width;
+    canvas.height = img.height;
+
+    const ctx =
+        canvas.getContext("2d");
+
+    ctx.fillStyle = "#111";
+    ctx.fillRect(
+        0,
+        0,
+        img.width,
+        img.height
+    );
+
+    const size = 6;
+
+    for (
+        let y = 0;
+        y < img.height;
+        y += size
+    ) {
+
+        for (
+            let x = 0;
+            x < img.width;
+            x += size
+        ) {
+
+            const c =
+                sample(img, x, y);
+
+            const colors = [
+                [c[0], 0, 0],
+                [0, c[1], 0],
+                [0, 0, c[2]]
+            ];
+
+            colors.forEach(
+                (col, n) => {
+
+                    ctx.fillStyle =
+                        `rgb(${col[0]},${col[1]},${col[2]})`;
+
+                    ctx.beginPath();
+
+                    ctx.arc(
+                        x +
+                            size * 0.3 +
+                            n * size * 0.2,
+                        y + size / 2,
+                        size * 0.22,
+                        0,
+                        Math.PI * 2
+                    );
+
+                    ctx.fill();
+                }
+            );
+        }
+    }
+
+    return ctx.getImageData(
+        0,
+        0,
+        img.width,
+        img.height
+    );
+}
+
+function bleach(img) {
+
+    return mapPixels(
+        img,
+        (r, g, b) => {
+
+            const v =
+                gray(r, g, b);
+
+            return [
+                v > 130 ? 245 : v * 0.35,
+                v > 130 ? 235 : v * 0.25,
+                v > 130 ? 220 : v * 0.15
+            ];
+        }
+    );
+}
+
+function dotInterference(img) {
+
+    const out =
+        cloneData(img);
+
+    for (
+        let y = 0;
+        y < img.height;
+        y++
+    ) {
+
+        for (
+            let x = 0;
+            x < img.width;
+            x++
+        ) {
+
+            const interference =
+                Math.sin(
+                    x * 0.28 +
+                    Math.sin(y * 0.05)
+                );
+
+            const i =
+                pixelIndex(
+                    x,
+                    y,
+                    img.width
+                );
+
+            const factor =
+                interference > 0
+                    ? 1.25
+                    : 0.55;
+
+            out.data[i] *= factor;
+            out.data[i + 1] *= factor;
+            out.data[i + 2] *= factor;
+        }
+    }
+
+    return out;
+}
+
+function cyber(img) {
+
+    return blend(
+        OPS.neon(img),
+        edgeMap(img),
+        0.45
+    );
+}
+
+function pixelLace(img) {
+
+    const out =
+        halftone(img, 5);
+
+    return scanLines(out);
+}
+
+function bio(img) {
+
+    return blend(
+        cyanotype(
+            edgeMap(img)
+        ),
+        img,
+        0.35
+    );
+}
+
+/* =========================
+   DECORATIVE HUD
+========================= */
+
+function drawHUD(ctx, w, h, type = "scan") {
+  ctx.save();
+
+  const t = performance.now() * 0.001;
+
+  // subtle technical frame
+  ctx.lineWidth = 1;
+
+  const pad = Math.min(w, h) * 0.045;
+
+  // corner brackets
+  const len = Math.min(w, h) * 0.065;
+
+  ctx.beginPath();
+
+  // top-left
+  ctx.moveTo(pad + len, pad);
+  ctx.lineTo(pad, pad);
+  ctx.lineTo(pad, pad + len);
+
+  // top-right
+  ctx.moveTo(w - pad - len, pad);
+  ctx.lineTo(w - pad, pad);
+  ctx.lineTo(w - pad, pad + len);
+
+  // bottom-left
+  ctx.moveTo(pad, h - pad - len);
+  ctx.lineTo(pad, h - pad);
+  ctx.lineTo(pad + len, h - pad);
+
+  // bottom-right
+  ctx.moveTo(w - pad, h - pad - len);
+  ctx.lineTo(w - pad, h - pad);
+  ctx.lineTo(w - pad - len, h - pad);
+
+  ctx.stroke();
+
+  /* scan line */
+
+  if (type === "scan") {
+    const y = ((t * 70) % (h + 100)) - 50;
+
+    ctx.globalAlpha = 0.18;
+    ctx.fillRect(0, y, w, 2);
+
+    ctx.globalAlpha = 0.07;
+    ctx.fillRect(0, y - 8, w, 18);
+  }
+
+  /* targeting reticle */
+
+  if (
+    type === "target" ||
+    type === "forensic" ||
+    type === "bio"
+  ) {
+    const cx = w * 0.5;
+    const cy = h * 0.45;
+
+    const r = Math.min(w, h) * 0.12;
+
+    ctx.globalAlpha = 0.65;
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(cx - r - 18, cy);
+    ctx.lineTo(cx - r + 5, cy);
+
+    ctx.moveTo(cx + r - 5, cy);
+    ctx.lineTo(cx + r + 18, cy);
+
+    ctx.moveTo(cx, cy - r - 18);
+    ctx.lineTo(cx, cy - r + 5);
+
+    ctx.moveTo(cx, cy + r - 5);
+    ctx.lineTo(cx, cy + r + 18);
+
+    ctx.stroke();
+
+    // rotating tick marks
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(t * 0.35);
+
+    for (let i = 0; i < 8; i++) {
+      ctx.rotate(Math.PI / 4);
+
+      ctx.beginPath();
+      ctx.moveTo(r + 8, 0);
+      ctx.lineTo(r + 18, 0);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  /* technical coordinates */
+
+  if (type === "forensic" || type === "bio") {
+    ctx.globalAlpha = 0.7;
+
+    ctx.font = `${Math.max(9, Math.floor(w * 0.018))}px monospace`;
+
+    ctx.fillText(
+      `X:${Math.floor(w * 0.314)}`,
+      pad,
+      h - pad - 20
+    );
+
+    ctx.fillText(
+      `Y:${Math.floor(h * 0.618)}`,
+      pad,
+      h - pad - 6
+    );
+
+    ctx.textAlign = "right";
+
+    ctx.fillText(
+      `SCAN_${String(Math.floor(t * 4) % 999).padStart(3, "0")}`,
+      w - pad,
+      pad + 12
+    );
+
+    ctx.fillText(
+      `FRAME_${String(Math.floor(t * 24) % 9999).padStart(4, "0")}`,
+      w - pad,
+      pad + 27
+    );
+
+    ctx.textAlign = "left";
+  }
+
+  ctx.restore();
+}
+
+
+/* =========================
+   BIO HUD
+========================= */
+
+function drawBioHUD(ctx, w, h) {
+  ctx.save();
+
+  const t = performance.now() * 0.001;
+
+  const cx = w * 0.5;
+  const cy = h * 0.46;
+
+  const base = Math.min(w, h);
+
+  /* face detection box */
+
+  const bw = base * 0.34;
+  const bh = base * 0.43;
+
+  ctx.globalAlpha = 0.7;
+  ctx.lineWidth = 1;
+
+  ctx.strokeRect(
+    cx - bw / 2,
+    cy - bh / 2,
+    bw,
+    bh
+  );
+
+  /* corner markers */
+
+  const c = base * 0.035;
+
+  const x1 = cx - bw / 2;
+  const x2 = cx + bw / 2;
+
+  const y1 = cy - bh / 2;
+  const y2 = cy + bh / 2;
+
+  ctx.beginPath();
+
+  ctx.moveTo(x1, y1 + c);
+  ctx.lineTo(x1, y1);
+  ctx.lineTo(x1 + c, y1);
+
+  ctx.moveTo(x2 - c, y1);
+  ctx.lineTo(x2, y1);
+  ctx.lineTo(x2, y1 + c);
+
+  ctx.moveTo(x1, y2 - c);
+  ctx.lineTo(x1, y2);
+  ctx.lineTo(x1 + c, y2);
+
+  ctx.moveTo(x2 - c, y2);
+  ctx.lineTo(x2, y2);
+  ctx.lineTo(x2, y2 - c);
+
+  ctx.stroke();
+
+  /* tracking points */
+
+  const points = [
+    [-0.15, -0.15],
+    [0.15, -0.15],
+    [-0.17, 0],
+    [0.17, 0],
+    [-0.11, 0.17],
+    [0.11, 0.17]
+  ];
+
+  ctx.fillStyle = "white";
+
+  for (const [px, py] of points) {
+    const pulse =
+      2 +
+      Math.sin(t * 5 + px * 10) * 1.2;
+
+    ctx.beginPath();
+
+    ctx.arc(
+      cx + bw * px,
+      cy + bh * py,
+      pulse,
+      0,
+      Math.PI * 2
+    );
+
+    ctx.fill();
+  }
+
+  /* rotating analysis ring */
+
+  ctx.globalAlpha = 0.5;
+
+  ctx.beginPath();
+
+  ctx.arc(
+    cx,
+    cy,
+    base * 0.23,
+    t * 0.5,
+    t * 0.5 + Math.PI * 0.65
+  );
+
+  ctx.stroke();
+
+  /* analysis text */
+
+  ctx.globalAlpha = 0.75;
+
+  ctx.font =
+    `${Math.max(9, Math.floor(base * 0.016))}px monospace`;
+
+  ctx.fillText(
+    "BIO_ANALYSIS",
+    cx - bw / 2,
+    y2 + 24
+  );
+
+  ctx.fillText(
+    "TRACKING: ACTIVE",
+    cx - bw / 2,
+    y2 + 38
+  );
+
+  ctx.restore();
+}
+/* =========================
+   CURSOR SWARM
+========================= */
+
+function drawCursors(ctx, w, h) {
+  ctx.save();
+
+  const t = performance.now() * 0.001;
+  const count = 28;
+
+  ctx.lineWidth = 1;
+
+  for (let i = 0; i < count; i++) {
+
+    const seed = i * 17.731;
+
+    const x =
+      (Math.sin(seed + t * 0.8) * 0.5 + 0.5) * w;
+
+    const y =
+      (Math.cos(seed * 1.37 + t * 0.6) * 0.5 + 0.5) * h;
+
+    const size =
+      5 + (i % 5);
+
+    ctx.globalAlpha =
+      0.3 + (i % 6) * 0.08;
+
+    /* cursor arrow */
+
+    ctx.beginPath();
+
+    ctx.moveTo(x, y);
+
+    ctx.lineTo(
+      x,
+      y + size * 3
+    );
+
+    ctx.lineTo(
+      x + size,
+      y + size * 2
+    );
+
+    ctx.lineTo(
+      x + size * 2,
+      y + size * 2.6
+    );
+
+    ctx.lineTo(
+      x + size * 1.4,
+      y + size * 1.7
+    );
+
+    ctx.closePath();
+
+    ctx.stroke();
+
+    /* tiny tracking trail */
+
+    ctx.globalAlpha *= 0.35;
+
+    ctx.beginPath();
+
+    ctx.moveTo(
+      x - size * 2,
+      y - size * 2
+    );
+
+    ctx.lineTo(x, y);
+
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+/* =========================
+   SCRIBBLE RIOT
+========================= */
+
+function drawScribbles(ctx, w, h) {
+  ctx.save();
+
+  const t = performance.now() * 0.001;
+
+  ctx.lineWidth = Math.max(1, w * 0.0015);
+  ctx.globalAlpha = 0.42;
+
+  const count = 24;
+
+  for (let i = 0; i < count; i++) {
+
+    const seed = i * 91.173;
+
+    let x =
+      (Math.sin(seed) * 0.5 + 0.5) * w;
+
+    let y =
+      (Math.cos(seed * 1.41) * 0.5 + 0.5) * h;
+
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+
+    /*
+      Each scribble gets its own
+      chaotic movement pattern.
+    */
+
+    const points = 25 + (i % 18);
+
+    for (let j = 0; j < points; j++) {
+
+      const angle =
+        seed +
+        j * 1.73 +
+        Math.sin(t * 0.4 + i) * 0.5;
+
+      const distance =
+        5 +
+        Math.sin(j * 2.1 + seed) * 9;
+
+      x +=
+        Math.cos(angle) * distance;
+
+      y +=
+        Math.sin(angle) * distance;
+
+      ctx.lineTo(x, y);
+    }
+
+    ctx.stroke();
+  }
+
+  /*
+    Extra aggressive scribble loops
+  */
+
+  ctx.globalAlpha = 0.25;
+
+  for (let i = 0; i < 12; i++) {
+
+    const cx =
+      ((Math.sin(i * 13.7) + 1) / 2) * w;
+
+    const cy =
+      ((Math.cos(i * 9.3) + 1) / 2) * h;
+
+    const radius =
+      Math.min(w, h) *
+      (0.04 + (i % 4) * 0.018);
+
+    ctx.beginPath();
+
+    for (
+      let a = 0;
+      a < Math.PI * 5;
+      a += 0.15
+    ) {
+
+      const r =
+        radius *
+        (1 +
+          Math.sin(a * 3 + i) * 0.28);
+
+      const px =
+        cx +
+        Math.cos(a + t * 0.15) * r;
+
+      const py =
+        cy +
+        Math.sin(a + t * 0.15) * r;
+
+      if (a === 0) {
+        ctx.moveTo(px, py);
+      } else {
+        ctx.lineTo(px, py);
+      }
+    }
+
+    ctx.stroke();
+  }
+ 
+    ctx.restore();
+}
+
+/* =========================
+   HUD SELECTOR
+========================= */
+
+function applyDecorativeHUD(ctx, w, h, name) {
+
+  if (!name) return;
+
+  const n = name.toLowerCase();
+
+  /* SCAN / SCIENTIFIC */
+
+  if (
+    n.includes("scan lines") ||
+    n.includes("x-ray scan") ||
+    n.includes("electron scan") ||
+    n.includes("radiograph")
+  ) {
+    drawHUD(ctx, w, h, "scan");
+  }
+
+
+  /* FORENSIC / SURVEILLANCE */
+
+  if (
+    n.includes("forensic photo") ||
+    n.includes("surveillance dossier")
+  ) {
+    drawHUD(ctx, w, h, "forensic");
+  }
+
+
+  /* BIO HUD */
+
+  if (n.includes("bio hud")) {
+    drawBioHUD(ctx, w, h);
+  }
+
+
+  /* CURSOR SWARM */
+
+  if (n.includes("cursor swarm")) {
+    drawCursors(ctx, w, h);
+  }
+
+
+  /* SCRIBBLE RIOT */
+
+  if (n.includes("scribble riot")) {
+    drawScribbles(ctx, w, h);
+  }
+}
+
+
+/* =========================
+   RENDER
+========================= */
+
+function render() {
+
+  if (!sourceImage) return;
+
+  const name =
+    currentFilterName ||
+    selectedFilter ||
+    "Original";
+
+  const w = sourceCanvas.width;
+  const h = sourceCanvas.height;
+
+
+  /* Draw original image */
+
+  sourceCtx.clearRect(
+    0,
+    0,
+    w,
+    h
+  );
+
+  sourceCtx.drawImage(
+    sourceImage,
+    0,
+    0,
+    w,
+    h
+  );
+
+
+  /* Get pixels */
+
+  let img =
+    sourceCtx.getImageData(
+      0,
+      0,
+      w,
+      h
+    );
+
+
+  /* Apply filter */
+
+  try {
+
+    img = applyFilter(
+      img,
+      name
+    );
+
+  } catch (error) {
+
+    console.error(
+      "Filter error:",
+      name,
+      error
+    );
+
+  }
+
+
+  /* Draw processed image */
+
+  outputCtx.clearRect(
+    0,
+    0,
+    w,
+    h
+  );
+
+  outputCtx.putImageData(
+    img,
+    0,
+    0
+  );
+
+
+  /* Decorative layer */
+
+  applyDecorativeHUD(
+    outputCtx,
+    w,
+    h,
+    name
+  );
+}
+
+
+/* =========================
+   IMAGE LOADING
+========================= */
 
 function loadImage(file) {
 
   if (!file) return;
 
-  const image = new Image();
+  if (!file.type.startsWith("image/")) {
 
-  image.onload = () => {
-
-    img = image;
-
-    $("empty").style.display = "none";
-
-    draw();
-
-  };
-
-  image.src = URL.createObjectURL(file);
-
-}
-
-
-/* =========================================
-   SIZE
-========================================= */
-
-function getSize() {
-
-  const ratio =
-    $("ratio")
-      .value
-      .split(":")
-      .map(Number);
-
-  const aspect = ratio[0] / ratio[1];
-
-  let width = img.naturalWidth;
-
-  let height = img.naturalHeight;
-
-  if (width / height > aspect) {
-
-    height = width / aspect;
-
-  } else {
-
-    width = height * aspect;
-
-  }
-
-  const maxWidth = 1200;
-
-  const maxHeight = 750;
-
-  const scale =
-    Math.min(
-      maxWidth / width,
-      maxHeight / height,
-      1
+    console.warn(
+      "Selected file is not an image."
     );
 
-  return [
-    Math.max(1, Math.round(width * scale)),
-    Math.max(1, Math.round(height * scale))
-  ];
-
-}
-
-
-/* =========================================
-   HSV
-========================================= */
-
-function rgbToHsv(r, g, b) {
-
-  r /= 255;
-  g /= 255;
-  b /= 255;
-
-  const max =
-    Math.max(r, g, b);
-
-  const min =
-    Math.min(r, g, b);
-
-  const d = max - min;
-
-  let h = 0;
-
-  if (d !== 0) {
-
-    if (max === r) {
-
-      h =
-        60 *
-        (((g - b) / d) % 6);
-
-    } else if (max === g) {
-
-      h =
-        60 *
-        ((b - r) / d + 2);
-
-    } else {
-
-      h =
-        60 *
-        ((r - g) / d + 4);
-
-    }
-
+    return;
   }
 
-  if (h < 0) h += 360;
 
-  const s =
-    max === 0 ? 0 : d / max;
+  const reader =
+    new FileReader();
 
-  return [h, s, max];
 
-}
+  reader.onload = function (event) {
 
+    const img =
+      new Image();
 
-/* =========================================
-   HSV → RGB
-========================================= */
 
-function hsvToRgb(h, s, v) {
+    img.onload = function () {
 
-  const c = v * s;
+      sourceImage = img;
 
-  const x =
-    c *
-    (1 - Math.abs((h / 60) % 2 - 1));
 
-  const m = v - c;
+      /* Keep processing reasonable
+         on mobile devices */
 
-  let r = 0;
-  let g = 0;
-  let b = 0;
+      const MAX_SIZE = 1400;
 
-  if (h < 60) {
-
-    r = c;
-    g = x;
-
-  } else if (h < 120) {
-
-    r = x;
-    g = c;
-
-  } else if (h < 180) {
-
-    g = c;
-    b = x;
-
-  } else if (h < 240) {
-
-    g = x;
-    b = c;
-
-  } else if (h < 300) {
-
-    r = x;
-    b = c;
-
-  } else {
-
-    r = c;
-    b = x;
-
-  }
-
-  return [
-    (r + m) * 255,
-    (g + m) * 255,
-    (b + m) * 255
-  ];
-
-}
-
-
-/* =========================================
-   HASH
-========================================= */
-
-function hash(text) {
-
-  let h = 2166136261;
-
-  for (let i = 0; i < text.length; i++) {
-
-    h ^= text.charCodeAt(i);
-
-    h =
-      Math.imul(
-        h,
-        16777619
-      );
-
-  }
-
-  return h >>> 0;
-
-}
-
-
-/* =========================================
-   NOISE
-========================================= */
-
-function noise(x) {
-
-  const value =
-    Math.sin(x * 12.9898) *
-    43758.5453;
-
-  return value -
-    Math.floor(value);
-
-}
-
-
-/* =========================================
-   MAIN FILTER ENGINE
-========================================= */
-
-function processImage(data, name, power) {
-
-  const pixels = data.data;
-
-  const width = data.width;
-
-  const height = data.height;
-
-  const lower = name.toLowerCase();
-
-  const seed = hash(name);
-
-
-  for (
-    let y = 0;
-    y < height;
-    y++
-  ) {
-
-    for (
-      let x = 0;
-      x < width;
-      x++
-    ) {
-
-      const p =
-        (y * width + x) * 4;
-
-
-      const r = pixels[p];
-
-      const g = pixels[p + 1];
-
-      const b = pixels[p + 2];
-
-
-      const luminance =
-        0.2126 * r +
-        0.7152 * g +
-        0.0722 * b;
-
-
-      let R = r;
-      let G = g;
-      let B = b;
-
-
-      /* ===========================
-         X-RAY
-      =========================== */
-
-      if (
-        lower.includes("x-ray") ||
-        lower.includes("radiograph")
-      ) {
-
-        const inverted =
-          255 - luminance;
-
-        R = inverted * 0.7;
-
-        G = inverted * 1.1;
-
-        B = inverted * 1.35;
-
-      }
-
-
-      /* ===========================
-         THERMAL
-      =========================== */
-
-      if (
-        lower.includes("thermal") ||
-        lower.includes("heat")
-      ) {
-
-        const t =
-          luminance / 255;
-
-        if (t < 0.25) {
-
-          R = 15;
-          G = 10;
-          B = 100 + t * 300;
-
-        } else if (t < 0.5) {
-
-          R = 30;
-          G = 100 + t * 200;
-          B = 255;
-
-        } else if (t < 0.75) {
-
-          R = 255;
-          G = 180 + t * 80;
-          B = 20;
-
-        } else {
-
-          R = 255;
-          G = 40;
-          B = 10;
-
-        }
-
-      }
-
-
-      /* ===========================
-         CYANOTYPE
-      =========================== */
-
-      if (
-        lower.includes("cyanotype")
-      ) {
-
-        R = luminance * 0.08;
-
-        G = luminance * 0.32;
-
-        B = luminance * 0.65;
-
-      }
-
-
-      /* ===========================
-         NIGHT VISION
-      =========================== */
-
-      if (
-        lower.includes("night vision")
-      ) {
-
-        R = luminance * 0.08;
-
-        G = luminance * 1.08;
-
-        B = luminance * 0.10;
-
-      }
-
-
-      /* ===========================
-         BLUE NEGATIVE
-      =========================== */
-
-      if (
-        lower.includes("blue negative")
-      ) {
-
-        R = (255 - r) * 0.15;
-
-        G = (255 - g) * 0.55;
-
-        B = 255 - b;
-
-      }
-
-
-      /* ===========================
-         REDSCALE
-      =========================== */
-
-      if (
-        lower.includes("redscale")
-      ) {
-
-        R = luminance * 1.15;
-
-        G = luminance * 0.45;
-
-        B = luminance * 0.20;
-
-      }
-
-
-      /* ===========================
-         PINK
-      =========================== */
-
-      if (
-        lower.includes("pink")
-      ) {
-
-        R = Math.min(
-          255,
-          luminance * 1.4
+      const scale =
+        Math.min(
+          1,
+          MAX_SIZE /
+          Math.max(
+            img.width,
+            img.height
+          )
         );
 
-        G = luminance * 0.35;
 
-        B = luminance * 0.8;
-
-      }
-
-
-      /* ===========================
-         AMBER
-      =========================== */
-
-      if (
-        lower.includes("amber")
-      ) {
-
-        R = luminance * 1.2;
-
-        G = luminance * 0.7;
-
-        B = luminance * 0.3;
-
-      }
-
-
-      /* ===========================
-         SOLARIZED
-      =========================== */
-
-      if (
-        lower.includes("solarized") ||
-        lower.includes("sabattier")
-      ) {
-
-        if (luminance > 120) {
-
-          R = 255 - r;
-          G = 255 - g;
-          B = 255 - b;
-
-        }
-
-      }
-
-
-      /* ===========================
-         LED MATRIX
-      =========================== */
-
-      if (
-        lower.includes("led matrix")
-      ) {
-
-        const cell = 7;
-
-        const gx =
-          Math.floor(x / cell) *
-          cell;
-
-        const gy =
-          Math.floor(y / cell) *
-          cell;
-
-        const gp =
-          (gy * width + gx) * 4;
-
-        const value =
-          (
-            pixels[gp] +
-            pixels[gp + 1] +
-            pixels[gp + 2]
-          ) / 3;
-
-        const active =
-          (x % cell === 0) ||
-          (y % cell === 0);
-
-        if (active) {
-
-          R = value * 0.25;
-
-          G = value * 0.8;
-
-          B = value * 0.55;
-
-        } else {
-
-          R = value;
-
-          G = value;
-
-          B = value;
-
-        }
-
-      }
-
-
-      /* ===========================
-         LOW POLY / VOXEL
-      =========================== */
-
-      if (
-        lower.includes("low poly") ||
-        lower.includes("voxel")
-      ) {
-
-        const block = 12;
-
-        const bx =
-          Math.floor(x / block) *
-          block;
-
-        const by =
-          Math.floor(y / block) *
-          block;
-
-        const bp =
-          (by * width + bx) * 4;
-
-        R = pixels[bp];
-
-        G = pixels[bp + 1];
-
-        B = pixels[bp + 2];
-
-      }
-
-
-      /* ===========================
-         HALFTONE
-      =========================== */
-
-      if (
-        lower.includes("halftone") ||
-        lower.includes("rescreen")
-      ) {
-
-        const size = 7;
-
-        const cx =
-          Math.floor(x / size) * size +
-          size / 2;
-
-        const cy =
-          Math.floor(y / size) * size +
-          size / 2;
-
-        const distance =
-          Math.hypot(
-            x - cx,
-            y - cy
-          );
-
-        const radius =
-          (255 - luminance) /
-          255 *
-          4;
-
-        if (distance > radius) {
-
-          R = 12;
-          G = 12;
-          B = 12;
-
-        }
-
-      }
-
-
-      /* ===========================
-         DITHER
-      =========================== */
-
-      if (
-        lower.includes("dither") ||
-        lower.includes("dot interference")
-      ) {
-
-        const pattern =
-          ((x * 13 +
-            y * 17 +
-            seed) %
-            64);
-
-        const value =
-          luminance / 4 +
-          pattern;
-
-        if (value < 100) {
-
-          R = 10;
-          G = 10;
-          B = 10;
-
-        } else {
-
-          R = 240;
-          G = 240;
-          B = 240;
-
-        }
-
-      }
-
-
-      /* ===========================
-         EDGE / ENGRAVING
-      =========================== */
-
-      if (
-        lower.includes("edge trace") ||
-        lower.includes("engraving") ||
-        lower.includes("stencil")
-      ) {
-
-        const left =
-          pixels[
-            Math.max(
-              0,
-              p - 4
-            )
-          ];
-
-        const right =
-          pixels[
-            Math.min(
-              pixels.length - 4,
-              p + 4
-            )
-          ];
-
-        const edge =
-          Math.abs(
-            left - right
-          );
-
-        R = edge * 2;
-
-        G = edge * 2;
-
-        B = edge * 2;
-
-      }
-
-
-      /* ===========================
-         STITCH
-      =========================== */
-
-      if (
-        lower.includes("stitch") ||
-        lower.includes("jacquard")
-      ) {
-
-        const size = 8;
-
-        const grid =
-          x % size < 2 ||
-          y % size < 2;
-
-        if (grid) {
-
-          R = luminance * 0.4;
-
-          G = luminance * 0.35;
-
-          B = luminance * 0.3;
-
-        } else {
-
-          R = luminance;
-
-          G = luminance * 0.85;
-
-          B = luminance * 0.7;
-
-        }
-
-      }
-
-
-      /* ===========================
-         VHS / VCR
-      =========================== */
-
-      if (
-        lower.includes("vhs") ||
-        lower.includes("vcr") ||
-        lower.includes("camcorder")
-      ) {
-
-        const shift =
+      const width =
+        Math.max(
+          1,
           Math.floor(
-            Math.sin(y * 0.08) * 5
-          );
-
-        const q =
-          (
-            y * width +
-            Math.max(
-              0,
-              Math.min(
-                width - 1,
-                x + shift
-              )
-            )
-          ) * 4;
-
-        R = pixels[q];
-
-        G = pixels[p + 1];
-
-        B =
-          pixels[
-            Math.max(
-              0,
-              p - 5
-            )
-          ];
-
-      }
-
-
-      /* ===========================
-         LIQUID CHROME
-      =========================== */
-
-      if (
-        lower.includes("chrome")
-      ) {
-
-        const wave =
-          Math.sin(
-            x * 0.035 +
-            y * 0.025
-          );
-
-        const metal =
-          luminance +
-          wave * 70;
-
-        R = metal;
-
-        G = metal;
-
-        B = metal * 1.08;
-
-      }
-
-
-      /* ===========================
-         FOG / BLOOM
-      =========================== */
-
-      if (
-        lower.includes("fog") ||
-        lower.includes("bloom") ||
-        lower.includes("frost") ||
-        lower.includes("halo")
-      ) {
-
-        const n =
-          noise(
-            x * 0.02 +
-            y * 0.013 +
-            seed
-          );
-
-        R = r + n * 60;
-
-        G = g + n * 50;
-
-        B = b + n * 70;
-
-      }
-
-
-      /* ===========================
-         COLLAGE
-      =========================== */
-
-      if (
-        lower.includes("collage") ||
-        lower.includes("ransom") ||
-        lower.includes("paste-up")
-      ) {
-
-        const blockX =
-          Math.floor(x / 45);
-
-        const blockY =
-          Math.floor(y / 45);
-
-        const block =
-          (
-            blockX +
-            blockY +
-            seed
-          ) % 5;
-
-        if (block === 0) {
-
-          R = 20;
-          G = 20;
-          B = 20;
-
-        }
-
-      }
-
-
-      /* ===========================
-         TOON / MARKER
-      =========================== */
-
-      if (
-        lower.includes("toon") ||
-        lower.includes("marker")
-      ) {
-
-        const levels = 6;
-
-        R =
-          Math.round(
-            r / 255 *
-            levels
-          ) *
-          255 /
-          levels;
-
-        G =
-          Math.round(
-            g / 255 *
-            levels
-          ) *
-          255 /
-          levels;
-
-        B =
-          Math.round(
-            b / 255 *
-            levels
-          ) *
-          255 /
-          levels;
-
-      }
-
-
-      /* ===========================
-         NIGHT / BLACKLIGHT
-      =========================== */
-
-      if (
-        lower.includes("blacklight")
-      ) {
-
-        R = luminance * 0.8;
-
-        G = luminance * 0.1;
-
-        B = luminance * 1.5;
-
-      }
-
-
-      /* ===========================
-         AEROCHROME
-      =========================== */
-
-      if (
-        lower.includes("aerochrome")
-      ) {
-
-        R = g * 1.25;
-
-        G = r * 0.65;
-
-        B = b * 1.1;
-
-      }
-
-
-      /* ===========================
-         POISON COPY
-      =========================== */
-
-      if (
-        lower.includes("poison")
-      ) {
-
-        R = luminance * 0.5;
-
-        G = luminance * 1.25;
-
-        B = luminance * 0.25;
-
-      }
-
-
-      /* ===========================
-         MIX
-      =========================== */
-
-      pixels[p] =
-        r + (R - r) * power;
-
-      pixels[p + 1] =
-        g + (G - g) * power;
-
-      pixels[p + 2] =
-        b + (B - b) * power;
-
-    }
-
-  }
-
-  return data;
-
-}
-
-
-/* =========================================
-   OVERLAYS
-========================================= */
-
-function drawOverlay(name) {
-
-  const lower =
-    name.toLowerCase();
-
-  const w = canvas.width;
-
-  const h = canvas.height;
-
-
-  ctx.save();
-
-
-  /* SCANLINES */
-
-  if (
-    lower.includes("scan") ||
-    lower.includes("vhs") ||
-    lower.includes("vcr") ||
-    lower.includes("teletext")
-  ) {
-
-    ctx.strokeStyle = "#ffffff";
-
-    ctx.globalAlpha = 0.12;
-
-    for (
-      let y = 0;
-      y < h;
-      y += 4
-    ) {
-
-      ctx.beginPath();
-
-      ctx.moveTo(0, y);
-
-      ctx.lineTo(w, y);
-
-      ctx.stroke();
-
-    }
-
-  }
-
-
-  /* HUD */
-
-  if (
-    lower.includes("hud") ||
-    lower.includes("cyber") ||
-    lower.includes("surveillance") ||
-    lower.includes("dossier")
-  ) {
-
-    ctx.strokeStyle = "#ffffff";
-
-    ctx.globalAlpha = 0.5;
-
-    ctx.lineWidth = 1;
-
-    const size =
-      Math.min(w, h) * 0.07;
-
-
-    const corners = [
-
-      [12, 12, 1, 1],
-
-      [w - 12, 12, -1, 1],
-
-      [12, h - 12, 1, -1],
-
-      [w - 12, h - 12, -1, -1]
-
-    ];
-
-
-    corners.forEach(
-      ([x, y, sx, sy]) => {
-
-        ctx.beginPath();
-
-        ctx.moveTo(
-          x,
-          y + size * sy
+            img.width * scale
+          )
         );
-
-        ctx.lineTo(x, y);
-
-        ctx.lineTo(
-          x + size * sx,
-          y
-        );
-
-        ctx.stroke();
-
-      }
-    );
-
-
-    ctx.fillStyle = "#ffffff";
-
-    ctx.font = "9px monospace";
-
-    ctx.fillText(
-      "BFX // " +
-      name.toUpperCase(),
-      14,
-      28
-    );
-
-    ctx.fillText(
-      new Date()
-        .toISOString()
-        .slice(11, 19),
-      14,
-      h - 14
-    );
-
-  }
-
-
-  /* GRID */
-
-  if (
-    lower.includes("matrix") ||
-    lower.includes("lcd") ||
-    lower.includes("cyber")
-  ) {
-
-    ctx.globalAlpha = 0.08;
-
-    ctx.strokeStyle = "#fff";
-
-    for (
-      let x = 0;
-      x < w;
-      x += 20
-    ) {
-
-      ctx.beginPath();
-
-      ctx.moveTo(x, 0);
-
-      ctx.lineTo(x, h);
-
-      ctx.stroke();
-
-    }
-
-    for (
-      let y = 0;
-      y < h;
-      y += 20
-    ) {
-
-      ctx.beginPath();
-
-      ctx.moveTo(0, y);
-
-      ctx.lineTo(w, y);
-
-      ctx.stroke();
-
-    }
-
-  }
-
-
-  /* RANDOM GLITCH */
-
-  if (
-    lower.includes("glitch") ||
-    lower.includes("screen clash") ||
-    lower.includes("hyper slice")
-  ) {
-
-    ctx.globalAlpha = 0.35;
-
-    for (
-      let i = 0;
-      i < 10;
-      i++
-    ) {
-
-      const y =
-        Math.random() * h;
 
       const height =
-        2 + Math.random() * 15;
+        Math.max(
+          1,
+          Math.floor(
+            img.height * scale
+          )
+        );
 
-      ctx.fillStyle =
-        Math.random() > 0.5
-          ? "#fff"
-          : "#000";
 
-      ctx.fillRect(
-        Math.random() * w,
-        y,
-        Math.random() * w * 0.4,
-        height
+      sourceCanvas.width =
+        width;
+
+      sourceCanvas.height =
+        height;
+
+      outputCanvas.width =
+        width;
+
+      outputCanvas.height =
+        height;
+
+
+      render();
+    };
+
+
+    img.onerror = function () {
+
+      console.error(
+        "Could not load image."
+      );
+
+    };
+
+
+    img.src =
+      event.target.result;
+  };
+
+
+  reader.onerror = function () {
+
+    console.error(
+      "Could not read image."
+    );
+
+  };
+
+
+  reader.readAsDataURL(file);
+}
+
+/* =========================
+   FILE INPUT
+========================= */
+
+const fileInput =
+  document.querySelector(
+    "#fileInput, #sourceInput, input[type='file']"
+  );
+
+
+if (fileInput) {
+
+  fileInput.addEventListener(
+    "change",
+    function (event) {
+
+      const file =
+        event.target.files &&
+        event.target.files[0];
+
+      if (file) {
+        loadImage(file);
+      }
+
+    }
+  );
+
+}
+
+
+/* =========================
+   DRAG + DROP
+========================= */
+
+const dropZone =
+  document.querySelector(
+    "#dropZone, .drop-zone, .upload-zone"
+  );
+
+
+if (dropZone) {
+
+  dropZone.addEventListener(
+    "dragover",
+    function (event) {
+
+      event.preventDefault();
+
+      dropZone.classList.add(
+        "dragging"
+      );
+
+    }
+  );
+
+
+  dropZone.addEventListener(
+    "dragleave",
+    function () {
+
+      dropZone.classList.remove(
+        "dragging"
+      );
+
+    }
+  );
+
+
+  dropZone.addEventListener(
+    "drop",
+    function (event) {
+
+      event.preventDefault();
+
+      dropZone.classList.remove(
+        "dragging"
+      );
+
+
+      const file =
+        event.dataTransfer &&
+        event.dataTransfer.files &&
+        event.dataTransfer.files[0];
+
+
+      if (file) {
+        loadImage(file);
+      }
+
+    }
+  );
+
+}
+
+
+/* =========================
+   DOWNLOAD
+========================= */
+
+function downloadResult() {
+
+  if (!outputCanvas) {
+    console.warn(
+      "Output canvas not found."
+    );
+
+    return;
+  }
+
+
+  const link =
+    document.createElement("a");
+
+
+  link.download =
+    "butterflyeffect-filter.png";
+
+
+  link.href =
+    outputCanvas.toDataURL(
+      "image/png"
+    );
+
+
+  document.body.appendChild(
+    link
+  );
+
+  link.click();
+
+  link.remove();
+}
+
+
+/* =========================
+   DOWNLOAD BUTTON
+========================= */
+
+const downloadBtn =
+  document.querySelector(
+    "#downloadBtn, #download, .download-btn"
+  );
+
+
+if (downloadBtn) {
+
+  downloadBtn.addEventListener(
+    "click",
+    downloadResult
+  );
+
+}
+
+
+/* =========================
+   INITIALIZE
+========================= */
+
+window.addEventListener(
+  "load",
+  function () {
+
+    console.log(
+      "Butterflyeffect initialized."
+    );
+
+
+    try {
+
+      if (
+        typeof updateFilterList ===
+        "function"
+      ) {
+
+        updateFilterList();
+
+      }
+
+    } catch (error) {
+
+      console.warn(
+        "Filter list initialization failed:",
+        error
       );
 
     }
 
   }
-
-
-  ctx.restore();
-
-}
-
-
-/* =========================================
-   DRAW
-========================================= */
-
-function draw() {
-
-  if (!img) return;
-
-
-  const [w, h] =
-    getSize();
-
-
-  canvas.width = w;
-
-  canvas.height = h;
-
-
-  ctx.clearRect(
-    0,
-    0,
-    w,
-    h
-  );
-
-
-  ctx.drawImage(
-    img,
-    0,
-    0,
-    w,
-    h
-  );
-
-
-  if (!before) {
-
-    const data =
-      ctx.getImageData(
-        0,
-        0,
-        w,
-        h
-      );
-
-
-    processImage(
-      data,
-      filters[selected].name,
-      intensity
-    );
-
-
-    ctx.putImageData(
-      data,
-      0,
-      0
-    );
-
-
-    drawOverlay(
-      filters[selected].name
-    );
-
-  }
-
-
-  $("selectedName").textContent =
-    filters[selected].name;
-
-
-  $("selectedDesc").textContent =
-    filters[selected].desc;
-
-
-  $("skinNo").textContent =
-    String(filters[selected].id)
-      .padStart(2, "0");
-
-
-  $("skinName").textContent =
-    filters[selected].name.toUpperCase();
-
-
-  $("status").textContent =
-    before
-      ? "BEFORE · ORIGINAL IMAGE"
-      : "READY · " +
-        filters[selected].name.toUpperCase();
-
-}
-
-
-/* =========================================
-   EVENTS
-========================================= */
-
-$("fileInput").onchange =
-  event =>
-    loadImage(
-      event.target.files[0]
-    );
-
-
-$("fileInput2").onchange =
-  event =>
-    loadImage(
-      event.target.files[0]
-    );
-
-
-$("search").oninput =
-  event =>
-    renderList(
-      event.target.value
-    );
-
-
-$("ratio").onchange =
-  draw;
-
-
-$("intensity").oninput =
-  event => {
-
-    intensity =
-      event.target.value / 100;
-
-    $("intensityOut").textContent =
-      event.target.value + "%";
-
-    draw();
-
-  };
-
-
-/* RANDOM */
-
-$("randomBtn").onclick =
-  () => {
-
-    selected =
-      Math.floor(
-        Math.random() *
-        filters.length
-      );
-
-    renderList(
-      $("search").value
-    );
-
-    draw();
-
-  };
-
-
-/* BEFORE */
-
-$("beforeBtn").onclick =
-  () => {
-
-    before = !before;
-
-    $("beforeBtn").textContent =
-      before
-        ? "AFTER"
-        : "BEFORE";
-
-    draw();
-
-  };
-
-
-/* RESET */
-
-$("resetBtn").onclick =
-  () => {
-
-    selected = 0;
-
-    intensity = 1;
-
-    $("intensity").value = 100;
-
-    $("intensityOut").textContent =
-      "100%";
-
-    before = false;
-
-    $("beforeBtn").textContent =
-      "BEFORE";
-
-    renderList();
-
-    draw();
-
-  };
-
-
-/* DOWNLOAD */
-
-$("downloadBtn").onclick =
-  () => {
-
-    if (!img) return;
-
-    const link =
-     document.createElement("a");
-
-    link.download =
-      "butterflyeffect-" +
-      filters[selected]
-        .name
-        .toLowerCase()
-        .replaceAll(" ", "-") +
-      ".png";
-
-    link.href =
-      canvas.toDataURL(
-        "image/png"
-      );
-
-    link.click();
-
-  };
-
-
-/* DRAG DROP */
-
-$("dropzone").ondragover =
-  event =>
-    event.preventDefault();
-
-
-$("dropzone").ondrop =
-  event => {
-
-    event.preventDefault();
-
-    loadImage(
-      event.dataTransfer.files[0]
-    );
-
-  };
-
-
-/* =========================================
-   FILTER CREATOR
-========================================= */
-
-$("creatorBtn").onclick =
-  () => {
-
-    $("creator")
-      .classList
-      .remove("hidden");
-
-
-    $("customBase").innerHTML =
-      filters
-        .slice(0, 110)
-        .map(
-          (filter, index) =>
-            `<option value="${index}">
-              ${filter.name}
-            </option>`
-        )
-        .join("");
-
-  };
-
-
-$("closeCreator").onclick =
-  () => {
-
-    $("creator")
-      .classList
-      .add("hidden");
-
-  };
-
-
-$("customIntensity").oninput =
-  event => {
-
-    $("customOut").textContent =
-      event.target.value + "%";
-
-  };
-
-
-$("saveCustom").onclick =
-  () => {
-
-    const name =
-      $("customName")
-        .value
-        .trim() ||
-      "My Experimental Skin";
-
-
-    const base =
-      filters[
-        Number(
-          $("customBase").value
-        )
-      ];
-
-
-    filters.push({
-
-      id: filters.length + 1,
-
-      name: name,
-
-      desc:
-        "Custom experimental blend based on " +
-        base.name
-
-    });
-
-
-    renderList();
-
-
-    selected =
-      filters.length - 1;
-
-
-    $("creator")
-      .classList
-      .add("hidden");
-
-
-    draw();
-
-  };
-/* =========================================
-   START
-========================================= */
-
-renderList();
+);
