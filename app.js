@@ -1,1039 +1,1574 @@
-"use strict";
+const $ = id => document.getElementById(id);
 
-/* =========================================================
-   BUTTERFLYEFFECT — MAIN APP
-   Works with either:
-   filters/filters.js
-   OR root filters.js
-   ========================================================= */
+const canvas = $("canvas");
+const ctx = canvas.getContext("2d", {
+  willReadFrequently: true
+});
 
-const $ = (s) => document.querySelector(s);
-const $$ = (s) => [...document.querySelectorAll(s)];
-
-/* ---------- 110 FILTER FALLBACK ---------- */
-
-const FILTER_NAMES = [
-  "X-Ray Scan","Banknote Engraving","Wire Photo","Giallo Gels",
-  "Two-Strip","Aerochrome","Slow Shutter","Full Stitch",
-  "Aura Gradient","Night Vision","Blue Negative","LED Matrix",
-  "Chemical Frost","Ink Bloom","Photogram","Heat Trace",
-  "Scan Lines","Film Soup","Cyanotype","Fogged Glass",
-  "Dead Pixels","Low Poly","256 Colors","Blue Flood",
-  "Herbarium","Density Map","Thermal Print","Paint By Number",
-  "Encyclopedia Plate","Ransom Collage","Wet Emulsion","Desktop 98",
-  "Cursor Swarm","Cutout Redaction","Scribble Riot","Paper Crumple",
-  "Solarized Print","Marker Makeup","Deadpan Toon","Chirashi Flyer",
-  "Street Poster","Cross Stitch","Blind Emboss","Overprint",
-  "Sticker Bomb","Bubble Wrapped","Liquid Chrome","Specimen Sheet",
-  "Misprint Echo","Camcorder HUD","VHS Chrome","Split Halftone",
-  "Indexed Dither","Stencil Fluoro","Sabattier Push","Voxel Relief",
-  "Amber Glamour","Screen Engraving","Thermal Liquid","Fog Silhouette",
-  "Pink Bloom","Rescreen","Teletext","Redscale Flash",
-  "Heat Negative","Chromatography","Vector Dissect","Dragged Shutter",
-  "Screen Clash","Chemigram","Expired Tungsten","Pastel Thermal",
-  "Paste-Up Collage","Overexposure Bloom","Slit Scan","Platen Drag",
-  "Blacklight","Forensic Photo","Lenticular","Pinscreen",
-  "Electron Scan","Daguerreotype","Autochrome","Jacquard Weave",
-  "4-Shade LCD","Dye Halo","Light Painted","Edge Trace",
-  "VCR OSD","Surveillance Dossier","Thermal Mask","Projector Burn",
-  "Riso Bloom","Radiograph Zine","Pixel Sort","Archive Rot",
-  "Three Inks","Scrap Stitched","Bleach Dye","Stitch Chart",
-  "Dot Interference","Cyber Sigil","Chrome Rorschach","Heat Contour",
-  "Pixel Lace","Pink Phosphor","Dropped Stitch","Hyper Slice",
-  "Bio HUD","Poison Copy"
-];
-
-/* If filters/filters.js loaded correctly, use it.
-   Otherwise create the 110 filters here. */
-
-if (!Array.isArray(window.DEFAULT_FILTERS)) {
-  window.DEFAULT_FILTERS = FILTER_NAMES.map((name, i) => ({
-    id: `f${i + 1}`,
-    name,
-    category: "Original 110"
-  }));
-}
-
-/* ---------- STATE ---------- */
-
-let filters = [...window.DEFAULT_FILTERS];
+let filters = [...window.FILTERS];
 
 let selected = 0;
-let image = null;
-let intensity = 100;
-let ratio = "3/4";
-let playlist = [];
 
-/* ---------- DOM ---------- */
+let img = null;
 
-const canvas = $("#canvas");
-const ctx = canvas ? canvas.getContext("2d") : null;
-const filterList = $("#filterList");
-const selectedName = $("#selectedName");
+let intensity = 1;
 
-/* ---------- SAFETY ---------- */
+let before = false;
 
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (m) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#039;"
-  }[m]));
-}
 
-/* ---------- CUSTOM FILTERS ---------- */
+/* =========================================
+   FILTER LIST
+========================================= */
 
-function loadCustomFilters() {
-  try {
-    const saved = JSON.parse(
-      localStorage.getItem("butterfly_custom_filters") || "[]"
-    );
+function renderList(query = "") {
 
-    if (Array.isArray(saved)) {
-      filters.push(...saved);
-    }
-  } catch (e) {
-    console.warn("Could not load custom filters.");
-  }
-}
+  const list = $("filterList");
 
-loadCustomFilters();
-
-/* ---------- FILTER LIST ---------- */
-
-function renderList() {
-  if (!filterList) return;
-
-  const search = ($("#search")?.value || "").toLowerCase().trim();
-
-  filterList.innerHTML = "";
+  list.innerHTML = "";
 
   filters.forEach((filter, index) => {
 
-    if (!filter.name.toLowerCase().includes(search)) return;
+    if (
+      query &&
+      !filter.name
+        .toLowerCase()
+        .includes(query.toLowerCase())
+    ) {
+      return;
+    }
 
-    const button = document.createElement("button");
+    const item = document.createElement("div");
 
-    button.className =
-      "filterItem" + (index === selected ? " active" : "");
+    item.className =
+      "filter-item" +
+      (index === selected ? " active" : "");
 
-    button.innerHTML = `
-      <span>${escapeHtml(filter.name)}</span>
-      <span class="num">${String(index + 1).padStart(3, "0")}</span>
+    item.innerHTML = `
+      <span>${String(filter.id).padStart(2, "0")}</span>
+      ${filter.name}
     `;
 
-    button.addEventListener("click", () => {
+    item.onclick = () => {
+
       selected = index;
 
-      if (selectedName) {
-        selectedName.textContent = filter.name;
-      }
+      before = false;
 
-      renderList();
-      draw();
-    });
+      $("beforeBtn").textContent = "BEFORE";
 
-    filterList.appendChild(button);
-  });
-
-  if ($("#count")) {
-    $("#count").textContent = filters.length;
-  }
-
-  if ($("#skinCount")) {
-    $("#skinCount").textContent = filters.length;
-  }
-}
-
-/* ---------- IMAGE LOADING ---------- */
-
-function loadFile(file) {
-
-  if (!file || !file.type.startsWith("image/")) {
-    alert("Please choose an image.");
-    return;
-  }
-
-  const reader = new FileReader();
-
-  reader.onload = (event) => {
-
-    image = new Image();
-
-    image.onload = () => {
-
-      $("#dropzone")?.classList.add("hasImage");
-
-      const empty = $("#emptyState");
-
-      if (empty) {
-        empty.style.display = "none";
-      }
+      renderList($("search").value);
 
       draw();
+
     };
 
-    image.src = event.target.result;
+    list.appendChild(item);
+
+  });
+
+  $("count").textContent = filters.length;
+
+}
+
+
+/* =========================================
+   IMAGE
+========================================= */
+
+function loadImage(file) {
+
+  if (!file) return;
+
+  const image = new Image();
+
+  image.onload = () => {
+
+    img = image;
+
+    $("empty").style.display = "none";
+
+    draw();
+
   };
 
-  reader.readAsDataURL(file);
+  image.src = URL.createObjectURL(file);
+
 }
 
-/* ---------- CSS FILTER ENGINE ---------- */
 
-function cssFor(name, amount, recipe) {
+/* =========================================
+   SIZE
+========================================= */
 
-  if (recipe) {
-    return recipe;
+function getSize() {
+
+  const ratio =
+    $("ratio")
+      .value
+      .split(":")
+      .map(Number);
+
+  const aspect = ratio[0] / ratio[1];
+
+  let width = img.naturalWidth;
+
+  let height = img.naturalHeight;
+
+  if (width / height > aspect) {
+
+    height = width / aspect;
+
+  } else {
+
+    width = height * aspect;
+
   }
 
-  const n = name.toLowerCase();
-  const x = amount / 100;
+  const maxWidth = 1200;
 
-  if (
-    n.includes("x-ray") ||
-    n.includes("negative") ||
-    n.includes("radiograph")
-  ) {
-    return "invert(1) contrast(1.4) grayscale(.25)";
-  }
+  const maxHeight = 750;
 
-  if (
-    n.includes("night") ||
-    n.includes("blacklight") ||
-    n.includes("phosphor")
-  ) {
-    return "brightness(.75) contrast(1.5) hue-rotate(85deg) saturate(1.8)";
-  }
+  const scale =
+    Math.min(
+      maxWidth / width,
+      maxHeight / height,
+      1
+    );
 
-  if (
-    n.includes("thermal") ||
-    n.includes("heat") ||
-    n.includes("chromatography")
-  ) {
-    return "contrast(1.45) saturate(2.2) hue-rotate(-30deg)";
-  }
+  return [
+    Math.max(1, Math.round(width * scale)),
+    Math.max(1, Math.round(height * scale))
+  ];
 
-  if (
-    n.includes("cyanotype") ||
-    n.includes("blue")
-  ) {
-    return "grayscale(.3) hue-rotate(165deg) saturate(1.8) contrast(1.25)";
-  }
-
-  if (
-    n.includes("redscale") ||
-    n.includes("amber") ||
-    n.includes("giallo")
-  ) {
-    return "sepia(.6) saturate(1.8) hue-rotate(-12deg) contrast(1.15)";
-  }
-
-  if (n.includes("solarized")) {
-    return "invert(.8) contrast(1.4) saturate(1.4)";
-  }
-
-  if (
-    n.includes("vhs") ||
-    n.includes("camcorder") ||
-    n.includes("vcr")
-  ) {
-    return "contrast(1.2) saturate(1.45) hue-rotate(-10deg)";
-  }
-
-  if (
-    n.includes("pastel") ||
-    n.includes("pink") ||
-    n.includes("aura") ||
-    n.includes("bloom")
-  ) {
-    return "brightness(1.12) saturate(1.45) contrast(.9)";
-  }
-
-  if (
-    n.includes("daguerreotype") ||
-    n.includes("expired") ||
-    n.includes("archive")
-  ) {
-    return "grayscale(.7) sepia(.55) contrast(1.15)";
-  }
-
-  if (
-    n.includes("dither") ||
-    n.includes("256") ||
-    n.includes("lcd") ||
-    n.includes("teletext")
-  ) {
-    return "saturate(.65) contrast(1.5)";
-  }
-
-  if (
-    n.includes("chrome") ||
-    n.includes("liquid")
-  ) {
-    return "contrast(1.55) saturate(1.5) brightness(1.05)";
-  }
-
-  if (
-    n.includes("toon") ||
-    n.includes("low poly") ||
-    n.includes("stencil")
-  ) {
-    return "contrast(1.65) saturate(1.5)";
-  }
-
-  return `
-    contrast(${1 + 0.35 * x})
-    saturate(${1 + 0.55 * x})
-    brightness(${1 + 0.08 * x})
-  `;
 }
 
-/* ---------- CANVAS EFFECTS ---------- */
+
+/* =========================================
+   HSV
+========================================= */
+
+function rgbToHsv(r, g, b) {
+
+  r /= 255;
+  g /= 255;
+  b /= 255;
+
+  const max =
+    Math.max(r, g, b);
+
+  const min =
+    Math.min(r, g, b);
+
+  const d = max - min;
+
+  let h = 0;
+
+  if (d !== 0) {
+
+    if (max === r) {
+
+      h =
+        60 *
+        (((g - b) / d) % 6);
+
+    } else if (max === g) {
+
+      h =
+        60 *
+        ((b - r) / d + 2);
+
+    } else {
+
+      h =
+        60 *
+        ((r - g) / d + 4);
+
+    }
+
+  }
+
+  if (h < 0) h += 360;
+
+  const s =
+    max === 0 ? 0 : d / max;
+
+  return [h, s, max];
+
+}
+
+
+/* =========================================
+   HSV → RGB
+========================================= */
+
+function hsvToRgb(h, s, v) {
+
+  const c = v * s;
+
+  const x =
+    c *
+    (1 - Math.abs((h / 60) % 2 - 1));
+
+  const m = v - c;
+
+  let r = 0;
+  let g = 0;
+  let b = 0;
+
+  if (h < 60) {
+
+    r = c;
+    g = x;
+
+  } else if (h < 120) {
+
+    r = x;
+    g = c;
+
+  } else if (h < 180) {
+
+    g = c;
+    b = x;
+
+  } else if (h < 240) {
+
+    g = x;
+    b = c;
+
+  } else if (h < 300) {
+
+    r = x;
+    b = c;
+
+  } else {
+
+    r = c;
+    b = x;
+
+  }
+
+  return [
+    (r + m) * 255,
+    (g + m) * 255,
+    (b + m) * 255
+  ];
+
+}
+
+
+/* =========================================
+   HASH
+========================================= */
+
+function hash(text) {
+
+  let h = 2166136261;
+
+  for (let i = 0; i < text.length; i++) {
+
+    h ^= text.charCodeAt(i);
+
+    h =
+      Math.imul(
+        h,
+        16777619
+      );
+
+  }
+
+  return h >>> 0;
+
+}
+
+
+/* =========================================
+   NOISE
+========================================= */
+
+function noise(x) {
+
+  const value =
+    Math.sin(x * 12.9898) *
+    43758.5453;
+
+  return value -
+    Math.floor(value);
+
+}
+
+
+/* =========================================
+   MAIN FILTER ENGINE
+========================================= */
+
+function processImage(data, name, power) {
+
+  const pixels = data.data;
+
+  const width = data.width;
+
+  const height = data.height;
+
+  const lower = name.toLowerCase();
+
+  const seed = hash(name);
+
+
+  for (
+    let y = 0;
+    y < height;
+    y++
+  ) {
+
+    for (
+      let x = 0;
+      x < width;
+      x++
+    ) {
+
+      const p =
+        (y * width + x) * 4;
+
+
+      const r = pixels[p];
+
+      const g = pixels[p + 1];
+
+      const b = pixels[p + 2];
+
+
+      const luminance =
+        0.2126 * r +
+        0.7152 * g +
+        0.0722 * b;
+
+
+      let R = r;
+      let G = g;
+      let B = b;
+
+
+      /* ===========================
+         X-RAY
+      =========================== */
+
+      if (
+        lower.includes("x-ray") ||
+        lower.includes("radiograph")
+      ) {
+
+        const inverted =
+          255 - luminance;
+
+        R = inverted * 0.7;
+
+        G = inverted * 1.1;
+
+        B = inverted * 1.35;
+
+      }
+
+
+      /* ===========================
+         THERMAL
+      =========================== */
+
+      if (
+        lower.includes("thermal") ||
+        lower.includes("heat")
+      ) {
+
+        const t =
+          luminance / 255;
+
+        if (t < 0.25) {
+
+          R = 15;
+          G = 10;
+          B = 100 + t * 300;
+
+        } else if (t < 0.5) {
+
+          R = 30;
+          G = 100 + t * 200;
+          B = 255;
+
+        } else if (t < 0.75) {
+
+          R = 255;
+          G = 180 + t * 80;
+          B = 20;
+
+        } else {
+
+          R = 255;
+          G = 40;
+          B = 10;
+
+        }
+
+      }
+
+
+      /* ===========================
+         CYANOTYPE
+      =========================== */
+
+      if (
+        lower.includes("cyanotype")
+      ) {
+
+        R = luminance * 0.08;
+
+        G = luminance * 0.32;
+
+        B = luminance * 0.65;
+
+      }
+
+
+      /* ===========================
+         NIGHT VISION
+      =========================== */
+
+      if (
+        lower.includes("night vision")
+      ) {
+
+        R = luminance * 0.08;
+
+        G = luminance * 1.08;
+
+        B = luminance * 0.10;
+
+      }
+
+
+      /* ===========================
+         BLUE NEGATIVE
+      =========================== */
+
+      if (
+        lower.includes("blue negative")
+      ) {
+
+        R = (255 - r) * 0.15;
+
+        G = (255 - g) * 0.55;
+
+        B = 255 - b;
+
+      }
+
+
+      /* ===========================
+         REDSCALE
+      =========================== */
+
+      if (
+        lower.includes("redscale")
+      ) {
+
+        R = luminance * 1.15;
+
+        G = luminance * 0.45;
+
+        B = luminance * 0.20;
+
+      }
+
+
+      /* ===========================
+         PINK
+      =========================== */
+
+      if (
+        lower.includes("pink")
+      ) {
+
+        R = Math.min(
+          255,
+          luminance * 1.4
+        );
+
+        G = luminance * 0.35;
+
+        B = luminance * 0.8;
+
+      }
+
+
+      /* ===========================
+         AMBER
+      =========================== */
+
+      if (
+        lower.includes("amber")
+      ) {
+
+        R = luminance * 1.2;
+
+        G = luminance * 0.7;
+
+        B = luminance * 0.3;
+
+      }
+
+
+      /* ===========================
+         SOLARIZED
+      =========================== */
+
+      if (
+        lower.includes("solarized") ||
+        lower.includes("sabattier")
+      ) {
+
+        if (luminance > 120) {
+
+          R = 255 - r;
+          G = 255 - g;
+          B = 255 - b;
+
+        }
+
+      }
+
+
+      /* ===========================
+         LED MATRIX
+      =========================== */
+
+      if (
+        lower.includes("led matrix")
+      ) {
+
+        const cell = 7;
+
+        const gx =
+          Math.floor(x / cell) *
+          cell;
+
+        const gy =
+          Math.floor(y / cell) *
+          cell;
+
+        const gp =
+          (gy * width + gx) * 4;
+
+        const value =
+          (
+            pixels[gp] +
+            pixels[gp + 1] +
+            pixels[gp + 2]
+          ) / 3;
+
+        const active =
+          (x % cell === 0) ||
+          (y % cell === 0);
+
+        if (active) {
+
+          R = value * 0.25;
+
+          G = value * 0.8;
+
+          B = value * 0.55;
+
+        } else {
+
+          R = value;
+
+          G = value;
+
+          B = value;
+
+        }
+
+      }
+
+
+      /* ===========================
+         LOW POLY / VOXEL
+      =========================== */
+
+      if (
+        lower.includes("low poly") ||
+        lower.includes("voxel")
+      ) {
+
+        const block = 12;
+
+        const bx =
+          Math.floor(x / block) *
+          block;
+
+        const by =
+          Math.floor(y / block) *
+          block;
+
+        const bp =
+          (by * width + bx) * 4;
+
+        R = pixels[bp];
+
+        G = pixels[bp + 1];
+
+        B = pixels[bp + 2];
+
+      }
+
+
+      /* ===========================
+         HALFTONE
+      =========================== */
+
+      if (
+        lower.includes("halftone") ||
+        lower.includes("rescreen")
+      ) {
+
+        const size = 7;
+
+        const cx =
+          Math.floor(x / size) * size +
+          size / 2;
+
+        const cy =
+          Math.floor(y / size) * size +
+          size / 2;
+
+        const distance =
+          Math.hypot(
+            x - cx,
+            y - cy
+          );
+
+        const radius =
+          (255 - luminance) /
+          255 *
+          4;
+
+        if (distance > radius) {
+
+          R = 12;
+          G = 12;
+          B = 12;
+
+        }
+
+      }
+
+
+      /* ===========================
+         DITHER
+      =========================== */
+
+      if (
+        lower.includes("dither") ||
+        lower.includes("dot interference")
+      ) {
+
+        const pattern =
+          ((x * 13 +
+            y * 17 +
+            seed) %
+            64);
+
+        const value =
+          luminance / 4 +
+          pattern;
+
+        if (value < 100) {
+
+          R = 10;
+          G = 10;
+          B = 10;
+
+        } else {
+
+          R = 240;
+          G = 240;
+          B = 240;
+
+        }
+
+      }
+
+
+      /* ===========================
+         EDGE / ENGRAVING
+      =========================== */
+
+      if (
+        lower.includes("edge trace") ||
+        lower.includes("engraving") ||
+        lower.includes("stencil")
+      ) {
+
+        const left =
+          pixels[
+            Math.max(
+              0,
+              p - 4
+            )
+          ];
+
+        const right =
+          pixels[
+            Math.min(
+              pixels.length - 4,
+              p + 4
+            )
+          ];
+
+        const edge =
+          Math.abs(
+            left - right
+          );
+
+        R = edge * 2;
+
+        G = edge * 2;
+
+        B = edge * 2;
+
+      }
+
+
+      /* ===========================
+         STITCH
+      =========================== */
+
+      if (
+        lower.includes("stitch") ||
+        lower.includes("jacquard")
+      ) {
+
+        const size = 8;
+
+        const grid =
+          x % size < 2 ||
+          y % size < 2;
+
+        if (grid) {
+
+          R = luminance * 0.4;
+
+          G = luminance * 0.35;
+
+          B = luminance * 0.3;
+
+        } else {
+
+          R = luminance;
+
+          G = luminance * 0.85;
+
+          B = luminance * 0.7;
+
+        }
+
+      }
+
+
+      /* ===========================
+         VHS / VCR
+      =========================== */
+
+      if (
+        lower.includes("vhs") ||
+        lower.includes("vcr") ||
+        lower.includes("camcorder")
+      ) {
+
+        const shift =
+          Math.floor(
+            Math.sin(y * 0.08) * 5
+          );
+
+        const q =
+          (
+            y * width +
+            Math.max(
+              0,
+              Math.min(
+                width - 1,
+                x + shift
+              )
+            )
+          ) * 4;
+
+        R = pixels[q];
+
+        G = pixels[p + 1];
+
+        B =
+          pixels[
+            Math.max(
+              0,
+              p - 5
+            )
+          ];
+
+      }
+
+
+      /* ===========================
+         LIQUID CHROME
+      =========================== */
+
+      if (
+        lower.includes("chrome")
+      ) {
+
+        const wave =
+          Math.sin(
+            x * 0.035 +
+            y * 0.025
+          );
+
+        const metal =
+          luminance +
+          wave * 70;
+
+        R = metal;
+
+        G = metal;
+
+        B = metal * 1.08;
+
+      }
+
+
+      /* ===========================
+         FOG / BLOOM
+      =========================== */
+
+      if (
+        lower.includes("fog") ||
+        lower.includes("bloom") ||
+        lower.includes("frost") ||
+        lower.includes("halo")
+      ) {
+
+        const n =
+          noise(
+            x * 0.02 +
+            y * 0.013 +
+            seed
+          );
+
+        R = r + n * 60;
+
+        G = g + n * 50;
+
+        B = b + n * 70;
+
+      }
+
+
+      /* ===========================
+         COLLAGE
+      =========================== */
+
+      if (
+        lower.includes("collage") ||
+        lower.includes("ransom") ||
+        lower.includes("paste-up")
+      ) {
+
+        const blockX =
+          Math.floor(x / 45);
+
+        const blockY =
+          Math.floor(y / 45);
+
+        const block =
+          (
+            blockX +
+            blockY +
+            seed
+          ) % 5;
+
+        if (block === 0) {
+
+          R = 20;
+          G = 20;
+          B = 20;
+
+        }
+
+      }
+
+
+      /* ===========================
+         TOON / MARKER
+      =========================== */
+
+      if (
+        lower.includes("toon") ||
+        lower.includes("marker")
+      ) {
+
+        const levels = 6;
+
+        R =
+          Math.round(
+            r / 255 *
+            levels
+          ) *
+          255 /
+          levels;
+
+        G =
+          Math.round(
+            g / 255 *
+            levels
+          ) *
+          255 /
+          levels;
+
+        B =
+          Math.round(
+            b / 255 *
+            levels
+          ) *
+          255 /
+          levels;
+
+      }
+
+
+      /* ===========================
+         NIGHT / BLACKLIGHT
+      =========================== */
+
+      if (
+        lower.includes("blacklight")
+      ) {
+
+        R = luminance * 0.8;
+
+        G = luminance * 0.1;
+
+        B = luminance * 1.5;
+
+      }
+
+
+      /* ===========================
+         AEROCHROME
+      =========================== */
+
+      if (
+        lower.includes("aerochrome")
+      ) {
+
+        R = g * 1.25;
+
+        G = r * 0.65;
+
+        B = b * 1.1;
+
+      }
+
+
+      /* ===========================
+         POISON COPY
+      =========================== */
+
+      if (
+        lower.includes("poison")
+      ) {
+
+        R = luminance * 0.5;
+
+        G = luminance * 1.25;
+
+        B = luminance * 0.25;
+
+      }
+
+
+      /* ===========================
+         MIX
+      =========================== */
+
+      pixels[p] =
+        r + (R - r) * power;
+
+      pixels[p + 1] =
+        g + (G - g) * power;
+
+      pixels[p + 2] =
+        b + (B - b) * power;
+
+    }
+
+  }
+
+  return data;
+
+}
+
+
+/* =========================================
+   OVERLAYS
+========================================= */
 
 function drawOverlay(name) {
 
-  if (!ctx || !canvas) return;
+  const lower =
+    name.toLowerCase();
 
-  const n = name.toLowerCase();
   const w = canvas.width;
-  const h = canvas.height;
-  const x = intensity / 100;
 
-  /* scan lines */
+  const h = canvas.height;
+
+
+  ctx.save();
+
+
+  /* SCANLINES */
 
   if (
-    n.includes("scan") ||
-    n.includes("matrix") ||
-    n.includes("hud") ||
-    n.includes("teletext") ||
-    n.includes("osd")
+    lower.includes("scan") ||
+    lower.includes("vhs") ||
+    lower.includes("vcr") ||
+    lower.includes("teletext")
   ) {
 
-    ctx.save();
+    ctx.strokeStyle = "#ffffff";
 
-    ctx.globalAlpha = 0.16 * x;
-    ctx.strokeStyle = "#b9ff62";
+    ctx.globalAlpha = 0.12;
+
+    for (
+      let y = 0;
+      y < h;
+      y += 4
+    ) {
+
+      ctx.beginPath();
+
+      ctx.moveTo(0, y);
+
+      ctx.lineTo(w, y);
+
+      ctx.stroke();
+
+    }
+
+  }
+
+
+  /* HUD */
+
+  if (
+    lower.includes("hud") ||
+    lower.includes("cyber") ||
+    lower.includes("surveillance") ||
+    lower.includes("dossier")
+  ) {
+
+    ctx.strokeStyle = "#ffffff";
+
+    ctx.globalAlpha = 0.5;
+
     ctx.lineWidth = 1;
 
-    for (let y = 0; y < h; y += 4) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
-      ctx.stroke();
-    }
+    const size =
+      Math.min(w, h) * 0.07;
 
-    ctx.restore();
-  }
 
-  /* dots / print texture */
+    const corners = [
 
-  if (
-    n.includes("dither") ||
-    n.includes("halftone") ||
-    n.includes("engraving") ||
-    n.includes("stitch") ||
-    n.includes("weave")
-  ) {
+      [12, 12, 1, 1],
 
-    ctx.save();
+      [w - 12, 12, -1, 1],
 
-    ctx.globalAlpha = 0.2 * x;
+      [12, h - 12, 1, -1],
+
+      [w - 12, h - 12, -1, -1]
+
+    ];
+
+
+    corners.forEach(
+      ([x, y, sx, sy]) => {
+
+        ctx.beginPath();
+
+        ctx.moveTo(
+          x,
+          y + size * sy
+        );
+
+        ctx.lineTo(x, y);
+
+        ctx.lineTo(
+          x + size * sx,
+          y
+        );
+
+        ctx.stroke();
+
+      }
+    );
+
+
     ctx.fillStyle = "#ffffff";
 
-    const gap = Math.max(4, 9 - x * 5);
+    ctx.font = "9px monospace";
 
-    for (let y = 0; y < h; y += gap) {
+    ctx.fillText(
+      "BFX // " +
+      name.toUpperCase(),
+      14,
+      28
+    );
 
-      for (let xx = 0; xx < w; xx += gap) {
+    ctx.fillText(
+      new Date()
+        .toISOString()
+        .slice(11, 19),
+      14,
+      h - 14
+    );
 
-        if (Math.random() > 0.5) {
-          ctx.fillRect(xx, y, 1.5, 1.5);
-        }
-      }
-    }
-
-    ctx.restore();
   }
 
-  /* glitch */
+
+  /* GRID */
 
   if (
-    n.includes("misprint") ||
-    n.includes("split") ||
-    n.includes("screen clash") ||
-    n.includes("pixel sort") ||
-    n.includes("hyper slice")
+    lower.includes("matrix") ||
+    lower.includes("lcd") ||
+    lower.includes("cyber")
   ) {
 
-    ctx.save();
+    ctx.globalAlpha = 0.08;
 
-    for (let i = 0; i < 10 * x; i++) {
+    ctx.strokeStyle = "#fff";
 
-      const y = Math.random() * h;
-      const height = 2 + Math.random() * 15;
-      const shift = Math.random() * 25 - 12;
-
-      ctx.globalAlpha = 0.25;
-
-      ctx.drawImage(
-        canvas,
-        0,
-        y,
-        w,
-        height,
-        shift,
-        y,
-        w,
-        height
-      );
-    }
-
-    ctx.restore();
-  }
-
-  /* redaction */
-
-  if (
-    n.includes("redaction") ||
-    n.includes("forensic") ||
-    n.includes("dossier")
-  ) {
-
-    ctx.save();
-
-    ctx.globalAlpha = 0.7 * x;
-    ctx.fillStyle = "#08090d";
-
-    for (let i = 0; i < 7; i++) {
-
-      ctx.fillRect(
-        w * 0.1 + Math.random() * w * 0.7,
-        Math.random() * h,
-        w * 0.12,
-        8 + Math.random() * 18
-      );
-    }
-
-    ctx.restore();
-  }
-
-  /* cyber scribbles */
-
-  if (
-    n.includes("scribble") ||
-    n.includes("riot") ||
-    n.includes("cyber sigil")
-  ) {
-
-    ctx.save();
-
-    ctx.globalAlpha = 0.45 * x;
-    ctx.strokeStyle = "#b9ff62";
-    ctx.lineWidth = 2;
-
-    for (let i = 0; i < 10; i++) {
+    for (
+      let x = 0;
+      x < w;
+      x += 20
+    ) {
 
       ctx.beginPath();
 
-      ctx.moveTo(
-        Math.random() * w,
-        Math.random() * h
-      );
+      ctx.moveTo(x, 0);
 
-      ctx.lineTo(
-        Math.random() * w,
-        Math.random() * h
-      );
+      ctx.lineTo(x, h);
 
       ctx.stroke();
+
     }
 
-    ctx.restore();
+    for (
+      let y = 0;
+      y < h;
+      y += 20
+    ) {
+
+      ctx.beginPath();
+
+      ctx.moveTo(0, y);
+
+      ctx.lineTo(w, y);
+
+      ctx.stroke();
+
+    }
+
   }
 
-  /* grain */
+
+  /* RANDOM GLITCH */
 
   if (
-    n.includes("film") ||
-    n.includes("emulsion") ||
-    n.includes("soup") ||
-    n.includes("rot")
+    lower.includes("glitch") ||
+    lower.includes("screen clash") ||
+    lower.includes("hyper slice")
   ) {
 
-    ctx.save();
+    ctx.globalAlpha = 0.35;
 
-    const amount = Math.floor(800 * x);
+    for (
+      let i = 0;
+      i < 10;
+      i++
+    ) {
 
-    for (let i = 0; i < amount; i++) {
+      const y =
+        Math.random() * h;
 
-      const px = Math.random() * w;
-      const py = Math.random() * h;
+      const height =
+        2 + Math.random() * 15;
 
-      ctx.globalAlpha = Math.random() * 0.15;
       ctx.fillStyle =
-        Math.random() > 0.5 ? "#ffffff" : "#000000";
+        Math.random() > 0.5
+          ? "#fff"
+          : "#000";
 
-      ctx.fillRect(px, py, 1, 1);
+      ctx.fillRect(
+        Math.random() * w,
+        y,
+        Math.random() * w * 0.4,
+        height
+      );
+
     }
 
-    ctx.restore();
   }
+
+
+  ctx.restore();
+
 }
 
-/* ---------- DRAW ---------- */
+
+/* =========================================
+   DRAW
+========================================= */
 
 function draw() {
 
-  if (!image || !canvas || !ctx) return;
+  if (!img) return;
 
-  const [rw, rh] = ratio.split("/").map(Number);
 
-  const max = 1600;
+  const [w, h] =
+    getSize();
 
-  let width = image.naturalWidth;
-  let height = image.naturalHeight;
 
-  const targetRatio = rw / rh;
+  canvas.width = w;
 
-  if (width / height > targetRatio) {
-    height = Math.round(width / targetRatio);
-  } else {
-    width = Math.round(height * targetRatio);
-  }
+  canvas.height = h;
 
-  const scale = Math.min(
-    max / width,
-    max / height,
-    1
-  );
-
-  canvas.width = Math.round(width * scale);
-  canvas.height = Math.round(height * scale);
 
   ctx.clearRect(
     0,
     0,
-    canvas.width,
-    canvas.height
+    w,
+    h
   );
 
-  const filter = filters[selected];
-
-  ctx.save();
-
-  ctx.filter = cssFor(
-    filter.name,
-    intensity,
-    filter.recipe || ""
-  );
 
   ctx.drawImage(
-    image,
+    img,
     0,
     0,
-    canvas.width,
-    canvas.height
+    w,
+    h
   );
 
-  ctx.restore();
 
-  drawOverlay(filter.name);
-}
+  if (!before) {
 
-/* ---------- DOWNLOAD ---------- */
-
-function downloadImage() {
-
-  if (!image) {
-    alert("Choose an image first.");
-    return;
-  }
-
-  const filename =
-    filters[selected].name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-");
-
-  const link = document.createElement("a");
-
-  link.download =
-    `butterflyeffect-${filename}.png`;
-
-  link.href =
-    canvas.toDataURL("image/png");
-
-  link.click();
-}
-
-/* ---------- IMAGE INPUT ---------- */
-
-$("#chooseBtn")?.addEventListener(
-  "click",
-  () => $("#fileInput")?.click()
-);
-
-$("#fileInput")?.addEventListener(
-  "change",
-  (e) => loadFile(e.target.files[0])
-);
-
-$("#dropzone")?.addEventListener(
-  "click",
-  (e) => {
-
-    if (e.target === canvas) return;
-
-    $("#fileInput")?.click();
-  }
-);
-
-$("#dropzone")?.addEventListener(
-  "dragover",
-  (e) => {
-    e.preventDefault();
-    $("#dropzone")?.classList.add("drag");
-  }
-);
-
-$("#dropzone")?.addEventListener(
-  "dragleave",
-  () => {
-    $("#dropzone")?.classList.remove("drag");
-  }
-);
-
-$("#dropzone")?.addEventListener(
-  "drop",
-  (e) => {
-
-    e.preventDefault();
-
-    $("#dropzone")?.classList.remove("drag");
-
-    loadFile(e.dataTransfer.files[0]);
-  }
-);
-
-/* ---------- SEARCH ---------- */
-
-$("#search")?.addEventListener(
-  "input",
-  renderList
-);
-
-/* ---------- INTENSITY ---------- */
-
-$("#intensity")?.addEventListener(
-  "input",
-  (e) => {
-
-    intensity = Number(e.target.value);
-
-    if ($("#intensityValue")) {
-      $("#intensityValue").textContent =
-        `${intensity}%`;
-    }
-
-    draw();
-  }
-);
-
-/* ---------- ASPECT ---------- */
-
-$$(".ratio").forEach((button) => {
-
-  button.addEventListener(
-    "click",
-    () => {
-
-      $$(".ratio").forEach(
-        (b) => b.classList.remove("active")
+    const data =
+      ctx.getImageData(
+        0,
+        0,
+        w,
+        h
       );
 
-      button.classList.add("active");
 
-      ratio = button.dataset.ratio;
+    processImage(
+      data,
+      filters[selected].name,
+      intensity
+    );
 
-      draw();
-    }
-  );
-});
 
-/* ---------- PREVIOUS / NEXT ---------- */
+    ctx.putImageData(
+      data,
+      0,
+      0
+    );
 
-$("#prevBtn")?.addEventListener(
-  "click",
+
+    drawOverlay(
+      filters[selected].name
+    );
+
+  }
+
+
+  $("selectedName").textContent =
+    filters[selected].name;
+
+
+  $("selectedDesc").textContent =
+    filters[selected].desc;
+
+
+  $("skinNo").textContent =
+    String(filters[selected].id)
+      .padStart(2, "0");
+
+
+  $("skinName").textContent =
+    filters[selected].name.toUpperCase();
+
+
+  $("status").textContent =
+    before
+      ? "BEFORE · ORIGINAL IMAGE"
+      : "READY · " +
+        filters[selected].name.toUpperCase();
+
+}
+
+
+/* =========================================
+   EVENTS
+========================================= */
+
+$("fileInput").onchange =
+  event =>
+    loadImage(
+      event.target.files[0]
+    );
+
+
+$("fileInput2").onchange =
+  event =>
+    loadImage(
+      event.target.files[0]
+    );
+
+
+$("search").oninput =
+  event =>
+    renderList(
+      event.target.value
+    );
+
+
+$("ratio").onchange =
+  draw;
+
+
+$("intensity").oninput =
+  event => {
+
+    intensity =
+      event.target.value / 100;
+
+    $("intensityOut").textContent =
+      event.target.value + "%";
+
+    draw();
+
+  };
+
+
+/* RANDOM */
+
+$("randomBtn").onclick =
   () => {
 
     selected =
-      (selected - 1 + filters.length) %
-      filters.length;
+      Math.floor(
+        Math.random() *
+        filters.length
+      );
 
-    if (selectedName) {
-      selectedName.textContent =
-        filters[selected].name;
-    }
+    renderList(
+      $("search").value
+    );
+
+    draw();
+
+  };
+
+
+/* BEFORE */
+
+$("beforeBtn").onclick =
+  () => {
+
+    before = !before;
+
+    $("beforeBtn").textContent =
+      before
+        ? "AFTER"
+        : "BEFORE";
+
+    draw();
+
+  };
+
+
+/* RESET */
+
+$("resetBtn").onclick =
+  () => {
+
+    selected = 0;
+
+    intensity = 1;
+
+    $("intensity").value = 100;
+
+    $("intensityOut").textContent =
+      "100%";
+
+    before = false;
+
+    $("beforeBtn").textContent =
+      "BEFORE";
 
     renderList();
+
     draw();
-  }
-);
 
-$("#nextBtn")?.addEventListener(
-  "click",
+  };
+
+
+/* DOWNLOAD */
+
+$("downloadBtn").onclick =
   () => {
 
-    selected =
-      (selected + 1) %
-      filters.length;
+    if (!img) return;
 
-    if (selectedName) {
-      selectedName.textContent =
-        filters[selected].name;
-    }
+    const link =
+     document.createElement("a");
 
-    renderList();
-    draw();
-  }
-);
+    link.download =
+      "butterflyeffect-" +
+      filters[selected]
+        .name
+        .toLowerCase()
+        .replaceAll(" ", "-") +
+      ".png";
 
-/* ---------- EXPORT ---------- */
-
-$("#downloadBtn")?.addEventListener(
-  "click",
-  downloadImage
-);
-
-/* ---------- FULLSCREEN ---------- */
-
-$("#fullscreenBtn")?.addEventListener(
-  "click",
-  () => {
-
-    if ($("#dropzone")?.requestFullscreen) {
-      $("#dropzone").requestFullscreen();
-    }
-  }
-);
-
-/* ---------- THEME ---------- */
-
-$("#themeBtn")?.addEventListener(
-  "click",
-  () => document.body.classList.toggle("light")
-);
-
-/* ---------- TABS ---------- */
-
-$$(".tab").forEach((button) => {
-
-  button.addEventListener(
-    "click",
-    () => {
-
-      $$(".tab").forEach(
-        (b) => b.classList.remove("active")
+    link.href =
+      canvas.toDataURL(
+        "image/png"
       );
 
-      button.classList.add("active");
+    link.click();
 
-      $$(".tabPage").forEach(
-        (page) => page.classList.remove("active")
-      );
+  };
 
-      const target =
-        $("#" + button.dataset.tab);
 
-      target?.classList.add("active");
-    }
-  );
-});
+/* DRAG DROP */
 
-/* ---------- PLAYLIST ---------- */
+$("dropzone").ondragover =
+  event =>
+    event.preventDefault();
 
-function renderPlaylist() {
 
-  const container = $("#playlistItems");
+$("dropzone").ondrop =
+  event => {
 
-  if (!container) return;
+    event.preventDefault();
 
-  if (!playlist.length) {
+    loadImage(
+      event.dataTransfer.files[0]
+    );
 
-    container.innerHTML =
-      "<p>No skins added yet.</p>";
+  };
 
-    return;
-  }
 
-  container.innerHTML =
-    playlist.map((index) => `
-      <div class="playlistRow">
-        <span>
-          ${escapeHtml(filters[index].name)}
-        </span>
+/* =========================================
+   FILTER CREATOR
+========================================= */
 
-        <button
-          data-remove="${index}"
-          type="button"
-        >
-          Remove
-        </button>
-      </div>
-    `).join("");
-
-  container
-    .querySelectorAll("[data-remove]")
-    .forEach((button) => {
-
-      button.addEventListener(
-        "click",
-        () => {
-
-          const index =
-            Number(button.dataset.remove);
-
-          playlist =
-            playlist.filter(
-              (x) => x !== index
-            );
-
-          renderPlaylist();
-        }
-      );
-    });
-}
-
-/* ---------- ADD FILTER ---------- */
-
-$("#addFilterBtn")?.addEventListener(
-  "click",
+$("creatorBtn").onclick =
   () => {
-    $("#modal")?.classList.remove("hidden");
-  }
-);
 
-$("#closeModal")?.addEventListener(
-  "click",
+    $("creator")
+      .classList
+      .remove("hidden");
+
+
+    $("customBase").innerHTML =
+      filters
+        .slice(0, 110)
+        .map(
+          (filter, index) =>
+            `<option value="${index}">
+              ${filter.name}
+            </option>`
+        )
+        .join("");
+
+  };
+
+
+$("closeCreator").onclick =
   () => {
-    $("#modal")?.classList.add("hidden");
-  }
-);
 
-/* ---------- CUSTOM FILTER ---------- */
+    $("creator")
+      .classList
+      .add("hidden");
 
-$("#newIntensity")?.addEventListener(
-  "input",
-  (e) => {
+  };
 
-    if ($("#newIntensityValue")) {
-      $("#newIntensityValue").textContent =
-        `${e.target.value}%`;
-    }
-  }
-);
 
-$("#saveFilter")?.addEventListener(
-  "click",
+$("customIntensity").oninput =
+  event => {
+
+    $("customOut").textContent =
+      event.target.value + "%";
+
+  };
+
+
+$("saveCustom").onclick =
   () => {
 
     const name =
-      $("#newName")?.value.trim();
+      $("customName")
+        .value
+        .trim() ||
+      "My Experimental Skin";
 
-    if (!name) {
-      alert("Give the filter a name.");
-      return;
-    }
 
-    const recipe =
-      $("#newRecipe")?.value.trim() ||
-      "contrast(1.2) saturate(1.3)";
+    const base =
+      filters[
+        Number(
+          $("customBase").value
+        )
+      ];
 
-    const custom = {
-      id: `custom-${Date.now()}`,
-      name,
-      category:
-        $("#newCategory")?.value ||
-        "Experimental",
-      recipe
-    };
 
-    let customs = [];
+    filters.push({
 
-    try {
-      customs = JSON.parse(
-        localStorage.getItem(
-          "butterfly_custom_filters"
-        ) || "[]"
-      );
+      id: filters.length + 1,
 
-      if (!Array.isArray(customs)) {
-        customs = [];
-      }
-    } catch {
-      customs = [];
-    }
+      name: name,
 
-    customs.push(custom);
+      desc:
+        "Custom experimental blend based on " +
+        base.name
 
-    localStorage.setItem(
-      "butterfly_custom_filters",
-      JSON.stringify(customs)
-    );
+    });
 
-    filters = [
-      ...window.DEFAULT_FILTERS,
-      ...customs
-    ];
+
+    renderList();
+
 
     selected =
       filters.length - 1;
 
-    if (selectedName) {
-      selectedName.textContent =
-        name;
-    }
 
-    renderList();
+    $("creator")
+      .classList
+      .add("hidden");
 
-    $("#modal")?.classList.add("hidden");
-
-    if ($("#newName")) {
-      $("#newName").value = "";
-    }
-
-    if ($("#newRecipe")) {
-      $("#newRecipe").value = "";
-    }
 
     draw();
-  }
-);
 
-/* ---------- EXPORT CUSTOM FILTER PACK ---------- */
-
-$("#exportPack")?.addEventListener(
-  "click",
-  () => {
-
-    const customs =
-      filters.filter(
-        (f) =>
-          String(f.id).startsWith("custom-")
-      );
-
-    const blob =
-      new Blob(
-        [JSON.stringify(customs, null, 2)],
-        { type: "application/json" }
-      );
-
-    const link =
-      document.createElement("a");
-
-    link.href =
-      URL.createObjectURL(blob);
-
-    link.download =
-      "butterflyeffect-custom-filters.json";
-
-    link.click();
-
-    URL.revokeObjectURL(link.href);
-  }
-);
-
-/* ---------- IMPORT CUSTOM FILTER PACK ---------- */
-
-$("#importPack")?.addEventListener(
-  "click",
-  () => $("#packInput")?.click()
-);
-
-$("#packInput")?.addEventListener(
-  "change",
-  (e) => {
-
-    const file =
-      e.target.files[0];
-
-    if (!file) return;
-
-    const reader =
-      new FileReader();
-
-    reader.onload = () => {
-
-      try {
-
-        const incoming =
-          JSON.parse(reader.result);
-
-        if (!Array.isArray(incoming)) {
-          throw new Error();
-        }
-
-        const old =
-          filters.filter(
-            (f) =>
-              String(f.id)
-                .startsWith("custom-")
-          );
-
-        const added =
-          incoming
-            .filter((f) => f.name)
-            .map((f) => ({
-              ...f,
-              id:
-                `custom-${Date.now()}-${Math.random()
-                  .toString(36)
-                  .slice(2)}`
-            }));
-
-        const merged =
-          [...old, ...added];
-
-        localStorage.setItem(
-          "butterfly_custom_filters",
-          JSON.stringify(merged)
-        );
-
-        filters = [
-          ...window.DEFAULT_FILTERS,
-          ...merged
-        ];
-
-        renderList();
-
-        alert(
-          `${added.length} filter(s) imported.`
-        );
-
-      } catch {
-        alert(
-          "Invalid filter pack."
-        );
-      }
-    };
-
-    reader.readAsText(file);
-
-    e.target.value = "";
-  }
-);
-
-/* ---------- INITIALIZE ---------- */
+  };
+/* =========================================
+   START
+========================================= */
 
 renderList();
-
-if (selectedName && filters.length) {
-  selectedName.textContent =
-    filters[0].name;
-}
-
-console.log(
-  `Butterflyeffect loaded: ${filters.length} filters`
-);
